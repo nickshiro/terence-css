@@ -60,5 +60,5 @@ Lightweight, dependency-free CSS formatter written in Zig.
 | Synthetic token rendering | — | not started |
 | Comment placement | — | not started |
 | Malformed CSS recovery rendering | — | not started |
-| Auto-indenting writer | — | not started |
+| Auto-indenting writer | — | implemented |
 | Printer idempotence verification | — | not started |

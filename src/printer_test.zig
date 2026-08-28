@@ -9,6 +9,7 @@ const tokenizer = @import("tokenizer.zig");
 const Tokenizer = tokenizer.Tokenizer;
 
 const Ast = ast.Ast;
+const AutoIndentingWriter = printer.AutoIndentingWriter;
 const Separator = printer.Separator;
 const TokenSerializer = printer.TokenSerializer;
 const TokenIndex = ast.TokenIndex;
@@ -19,6 +20,152 @@ const Sample = struct {
     tag: TokenTag,
     text: []const u8,
 };
+
+test "auto-indenting writer: applies nested indentation lazily" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(&output.writer, .{});
+
+    try indented.writer.writeAll("rule {\n");
+    try indented.pushIndent();
+    try indented.writer.writeAll("color: red;\n");
+    try indented.pushIndent();
+    try indented.writer.writeAll("nested\n");
+    try indented.popIndent();
+    try indented.writer.writeAll("display: block;\n");
+    try indented.popIndent();
+    try indented.writer.writeByte('}');
+
+    try testing.expectEqualStrings(
+        "rule {\n  color: red;\n    nested\n  display: block;\n}",
+        output.written(),
+    );
+}
+
+test "auto-indenting writer: does not indent empty lines" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(&output.writer, .{});
+
+    try indented.pushIndent();
+    try indented.writer.writeAll("first\n\n\nsecond\n");
+
+    try testing.expectEqualStrings("  first\n\n\n  second\n", output.written());
+}
+
+test "auto-indenting writer: preserves every source line ending" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(&output.writer, .{});
+
+    try indented.pushIndent();
+    try indented.writer.writeAll("a\r\nb\rc\x0cd");
+
+    try testing.expectEqualStrings("  a\r\n  b\r  c\x0c  d", output.written());
+}
+
+test "auto-indenting writer: supports zero and custom indent widths" {
+    const cases = [_]struct {
+        width: usize,
+        expected: []const u8,
+    }{
+        .{ .width = 0, .expected = "a\nb" },
+        .{ .width = 4, .expected = "        a\n        b" },
+    };
+
+    for (cases) |case| {
+        var output: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer output.deinit();
+        var indented: AutoIndentingWriter = .init(
+            &output.writer,
+            .{ .indent_width = case.width },
+        );
+
+        try indented.pushIndent();
+        try indented.pushIndent();
+        try indented.writer.writeAll("a\nb");
+        try testing.expectEqualStrings(case.expected, output.written());
+    }
+}
+
+test "auto-indenting writer: supports vector splat and flush writer operations" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(&output.writer, .{});
+    try indented.pushIndent();
+
+    var fragments = [_][]const u8{ "a", "\n", "b\n" };
+    try indented.writer.writeVecAll(&fragments);
+    try indented.writer.splatBytesAll("c\n", 2);
+    try indented.writer.flush();
+
+    try testing.expectEqualStrings("  a\n  b\n  c\n  c\n", output.written());
+}
+
+test "auto-indenting writer: depth changes affect only future line content" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(&output.writer, .{});
+
+    try indented.writer.writeAll("a");
+    try indented.pushIndent();
+    try indented.writer.writeAll("b\n");
+    try indented.writer.writeAll("c\n");
+    try indented.popIndent();
+    try indented.writer.writeAll("d");
+
+    try testing.expectEqualStrings("ab\n  c\nd", output.written());
+}
+
+test "auto-indenting writer: rejects indentation underflow" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(&output.writer, .{});
+
+    try testing.expectError(error.IndentUnderflow, indented.popIndent());
+    try indented.pushIndent();
+    try indented.popIndent();
+    try testing.expectError(error.IndentUnderflow, indented.popIndent());
+}
+
+test "auto-indenting writer: rejects indentation overflow" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(
+        &output.writer,
+        .{ .indent_width = std.math.maxInt(usize) },
+    );
+
+    try indented.pushIndent();
+    try testing.expectError(error.IndentOverflow, indented.pushIndent());
+}
+
+test "auto-indenting writer: propagates downstream write failures" {
+    var downstream: std.Io.Writer = .failing;
+    var indented: AutoIndentingWriter = .init(&downstream, .{});
+
+    try indented.pushIndent();
+    try testing.expectError(error.WriteFailed, indented.writer.writeAll("x"));
+}
+
+test "auto-indenting writer: composes with token serializer" {
+    var tree = try Ast.parseComponentValues(testing.allocator, "a b");
+    defer tree.deinit(testing.allocator);
+    const tokens = try significantTokens(tree, testing.allocator);
+    defer testing.allocator.free(tokens);
+
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var indented: AutoIndentingWriter = .init(&output.writer, .{});
+    try indented.pushIndent();
+    var serializer: TokenSerializer = .init(tree, &indented.writer);
+
+    try serializer.emitToken(tokens[0], .newline);
+    try serializer.emitToken(tokens[1], .none);
+    try serializer.finish();
+
+    try testing.expectEqualStrings("  a\n  b", output.written());
+}
 
 test "token serializer: CSS Syntax unsafe-pair table (§9)" {
     const left = [_]Sample{

@@ -25,6 +25,136 @@ pub const TokenView = struct {
     text: []const u8,
 };
 
+/// A `Writer` adapter that inserts indentation immediately before the first
+/// byte of each non-empty line. Newline bytes pass through unchanged, so raw
+/// source ranges and preserved trivia remain byte-for-byte stable.
+pub const AutoIndentingWriter = struct {
+    downstream: *Writer,
+    writer: Writer,
+    indent_width: usize,
+    indent_depth: usize = 0,
+    line_start: bool = true,
+
+    pub const Options = struct {
+        indent_width: usize = 2,
+    };
+
+    pub const IndentError = error{
+        IndentOverflow,
+        IndentUnderflow,
+    };
+
+    pub fn init(downstream: *Writer, options: Options) AutoIndentingWriter {
+        return .{
+            .downstream = downstream,
+            .writer = .{
+                .buffer = &.{},
+                .vtable = &.{
+                    .drain = AutoIndentingWriter.drain,
+                    .flush = AutoIndentingWriter.flush,
+                    .rebase = Writer.failingRebase,
+                },
+            },
+            .indent_width = options.indent_width,
+        };
+    }
+
+    pub fn pushIndent(self: *AutoIndentingWriter) IndentError!void {
+        if (self.indent_depth == std.math.maxInt(usize)) {
+            return error.IndentOverflow;
+        }
+
+        const next_depth = self.indent_depth + 1;
+        if (self.indent_width != 0 and
+            next_depth > std.math.maxInt(usize) / self.indent_width)
+        {
+            return error.IndentOverflow;
+        }
+
+        self.indent_depth = next_depth;
+    }
+
+    pub fn popIndent(self: *AutoIndentingWriter) IndentError!void {
+        if (self.indent_depth == 0) {
+            return error.IndentUnderflow;
+        }
+
+        self.indent_depth -= 1;
+    }
+
+    fn drain(
+        writer: *Writer,
+        data: []const []const u8,
+        splat: usize,
+    ) Writer.Error!usize {
+        std.debug.assert(data.len != 0);
+        const self: *AutoIndentingWriter = @alignCast(
+            @fieldParentPtr("writer", writer),
+        );
+
+        try self.writeBytes(writer.buffered());
+        writer.end = 0;
+
+        for (data[0 .. data.len - 1]) |bytes| {
+            try self.writeBytes(bytes);
+        }
+
+        const pattern = data[data.len - 1];
+        for (0..splat) |_| {
+            try self.writeBytes(pattern);
+        }
+
+        return Writer.countSplat(data, splat);
+    }
+
+    fn flush(writer: *Writer) Writer.Error!void {
+        const self: *AutoIndentingWriter = @alignCast(
+            @fieldParentPtr("writer", writer),
+        );
+
+        if (writer.end != 0) {
+            _ = try drain(writer, &.{""}, 1);
+        }
+
+        try self.downstream.flush();
+    }
+
+    fn writeBytes(self: *AutoIndentingWriter, bytes: []const u8) Writer.Error!void {
+        var cursor: usize = 0;
+        while (cursor < bytes.len) {
+            if (self.line_start) {
+                if (isLineBreak(bytes[cursor])) {
+                    try self.downstream.writeByte(bytes[cursor]);
+                    cursor += 1;
+                    continue;
+                }
+
+                try self.writeIndent();
+                self.line_start = false;
+            }
+
+            const newline = std.mem.findAnyPos(
+                u8,
+                bytes,
+                cursor,
+                "\n\r\x0c",
+            ) orelse {
+                try self.downstream.writeAll(bytes[cursor..]);
+                return;
+            };
+
+            try self.downstream.writeAll(bytes[cursor .. newline + 1]);
+            self.line_start = true;
+            cursor = newline + 1;
+        }
+    }
+
+    fn writeIndent(self: *AutoIndentingWriter) Writer.Error!void {
+        const spaces = self.indent_depth * self.indent_width;
+        try self.downstream.splatByteAll(' ', spaces);
+    }
+};
+
 /// Serializes source and synthetic tokens without accidentally changing their
 /// tokenization. Formatting policy belongs to the AST renderer; this type owns
 /// source trivia, token ordering, and CSS Syntax §9 boundary protection.
@@ -468,4 +598,8 @@ fn startsWithNewline(text: []const u8) bool {
     }
 
     return text[0] == '\n' or text[0] == '\r' or text[0] == 0x0c;
+}
+
+fn isLineBreak(byte: u8) bool {
+    return byte == '\n' or byte == '\r' or byte == 0x0c;
 }
