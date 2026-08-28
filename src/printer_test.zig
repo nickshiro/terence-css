@@ -285,15 +285,164 @@ test "renderer: handles empty whitespace-only and comment-only roots" {
     }
 }
 
-test "renderer: rejects rule and declaration nodes until their phase" {
-    var declaration = try Ast.parseDeclaration(testing.allocator, "color: red");
-    defer declaration.deinit(testing.allocator);
-    var declaration_output: std.Io.Writer.Discarding = .init(&.{});
-    try testing.expectError(
-        error.UnsupportedNode,
-        printer.render(declaration, &declaration_output.writer, .{}),
+test "renderer: formats declarations and preserves semicolon ownership" {
+    const cases = [_]struct {
+        source: []const u8,
+        expected: []const u8,
+    }{
+        .{ .source = "  color : red  ; ", .expected = "color: red;" },
+        .{ .source = "opacity:.5", .expected = "opacity: .5" },
+        .{ .source = "empty:;", .expected = "empty:;" },
+        .{ .source = "empty:   ", .expected = "empty:" },
+        .{ .source = "empty:   ;", .expected = "empty:;" },
+    };
+
+    for (cases) |case| {
+        var tree = try Ast.parseDeclaration(testing.allocator, case.source);
+        defer tree.deinit(testing.allocator);
+        const actual = try renderTree(testing.allocator, tree);
+        defer testing.allocator.free(actual);
+        try testing.expectEqualStrings(case.expected, actual);
+    }
+}
+
+test "renderer: reconstructs important from source tokens" {
+    const cases = [_]struct {
+        source: []const u8,
+        expected: []const u8,
+    }{
+        .{
+            .source = "color: red ! ImPoRtAnT  ;",
+            .expected = "color: red !ImPoRtAnT;",
+        },
+        .{
+            .source = "color:red !\\69mportant",
+            .expected = "color: red !\\69mportant",
+        },
+        .{
+            .source = "color:!important;",
+            .expected = "color: !important;",
+        },
+        .{
+            .source = "color:red/**/!/**/important;",
+            .expected = "color: red /**/ !/**/important;",
+        },
+    };
+
+    for (cases) |case| {
+        var tree = try Ast.parseDeclaration(testing.allocator, case.source);
+        defer tree.deinit(testing.allocator);
+        const actual = try renderTree(testing.allocator, tree);
+        defer testing.allocator.free(actual);
+        try testing.expectEqualStrings(case.expected, actual);
+    }
+}
+
+test "renderer: formats declaration component values structurally" {
+    const source = "--theme : fn(a,b),[c,d],{e,f} !important;";
+    var tree = try Ast.parseDeclaration(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "--theme: fn(a, b), [c, d], {e, f} !important;",
+        actual,
+    );
+}
+
+test "renderer: emits declaration lists one declaration per line" {
+    const source = " color:red; width : 1px ; --x:fn(a,b);";
+    var tree = try Ast.parseBlockContents(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "color: red;\nwidth: 1px;\n--x: fn(a, b);",
+        actual,
+    );
+}
+
+test "renderer: places inter-declaration comments on their own lines" {
+    const source = "color:red; /* between */ width:1px;";
+    var tree = try Ast.parseBlockContents(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "color: red;\n/* between */\nwidth: 1px;",
+        actual,
+    );
+}
+
+test "renderer: retains invalid block contents between declaration lists" {
+    const source = "color:red; broken ???; width:1px;";
+    var tree = try Ast.parseBlockContents(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "color: red;\nbroken ???;\nwidth: 1px;",
+        actual,
+    );
+}
+
+test "renderer: preserves unicode-range tokens in declarations" {
+    var tree = try Ast.parseDeclaration(
+        testing.allocator,
+        "unicode-range:U+0025-00FF,U+4??;",
+    );
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "unicode-range: U+0025-00FF/**/, U+4??/**/;",
+        actual,
     );
 
+    var reparsed = try Ast.parseDeclaration(testing.allocator, actual);
+    defer reparsed.deinit(testing.allocator);
+    const declaration = reparsed.extraChildren(reparsed.root)[0];
+    const values = reparsed.extraChildren(declaration);
+    try testing.expectEqual(TokenTag.unicode_range, reparsed.tokenTag(
+        reparsed.nodes.items(.main_token)[values[0]],
+    ));
+    try testing.expectEqual(TokenTag.unicode_range, reparsed.tokenTag(
+        reparsed.nodes.items(.main_token)[values[3]],
+    ));
+}
+
+test "renderer: declaration formatting is idempotent" {
+    const source = " color:red;/* note */--x:fn(a,b)! important; width: 1px";
+    var first_tree = try Ast.parseBlockContents(testing.allocator, source);
+    defer first_tree.deinit(testing.allocator);
+    const once = try renderTree(testing.allocator, first_tree);
+    defer testing.allocator.free(once);
+
+    var second_tree = try Ast.parseBlockContents(testing.allocator, once);
+    defer second_tree.deinit(testing.allocator);
+    const twice = try renderTree(testing.allocator, second_tree);
+    defer testing.allocator.free(twice);
+
+    try testing.expectEqualStrings(once, twice);
+}
+
+test "renderer: reports malformed declaration structure" {
+    var tree = try Ast.parseDeclaration(testing.allocator, "color: red;");
+    defer tree.deinit(testing.allocator);
+    tree.tokens.items(.tag)[1] = .semicolon;
+    var output: std.Io.Writer.Discarding = .init(&.{});
+    try testing.expectError(
+        error.MalformedDeclaration,
+        printer.render(tree, &output.writer, .{}),
+    );
+}
+
+test "renderer: still rejects rule nodes until their phase" {
     var stylesheet = try Ast.parseStylesheet(testing.allocator, "a { color: red; }");
     defer stylesheet.deinit(testing.allocator);
     var stylesheet_output: std.Io.Writer.Discarding = .init(&.{});

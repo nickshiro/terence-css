@@ -485,11 +485,13 @@ pub const RenderOptions = struct {
 
 pub const RenderError = TokenSerializer.Error ||
     AutoIndentingWriter.IndentError ||
-    error{UnsupportedNode};
+    error{
+        UnsupportedNode,
+        MalformedDeclaration,
+    };
 
-/// Renders the AST node families used by the component-value parser. Rule and
-/// declaration rendering is added separately so unsupported semantic nodes
-/// fail explicitly instead of silently replaying their source.
+/// Renders component values and declarations. Rule nodes fail explicitly
+/// instead of silently replaying source that the renderer does not understand.
 pub fn render(
     tree: Ast,
     downstream: *Writer,
@@ -556,12 +558,13 @@ const Renderer = struct {
             .simple_block_paren,
             .function,
             => try self.renderContainer(node, .r_paren, after),
+            .declaration_list => try self.renderDeclarationList(node, after),
+            .declaration,
+            .declaration_important,
+            => try self.renderDeclaration(node, after),
             .at_rule,
             .qualified_rule,
             .block,
-            .declaration_list,
-            .declaration,
-            .declaration_important,
             => return error.UnsupportedNode,
         }
     }
@@ -630,6 +633,126 @@ const Renderer = struct {
         }
     }
 
+    fn renderDeclarationList(
+        self: *Renderer,
+        node: ast.Index,
+        after: Separator,
+    ) RenderError!void {
+        const declarations = self.tree.extraChildren(node);
+        for (declarations, 0..) |declaration, index| {
+            const declaration_after: Separator = if (index + 1 < declarations.len)
+                .newline
+            else
+                after;
+            try self.renderNode(declaration, declaration_after);
+        }
+    }
+
+    fn renderDeclaration(
+        self: *Renderer,
+        node: ast.Index,
+        after: Separator,
+    ) RenderError!void {
+        const tags = self.tree.nodes.items(.tag);
+        const name = self.tree.nodes.items(.main_token)[node];
+        const important = tags[node] == .declaration_important;
+        const parts = try self.declarationParts(node, important);
+        const values = self.tree.extraChildren(node);
+        const has_value = self.nextRenderable(values, 0) != null;
+
+        try self.serializer.emitToken(name, .none);
+
+        const colon_after: Separator = if (has_value or important)
+            .space
+        else if (parts.semicolon != null)
+            .none
+        else
+            after;
+        try self.serializer.emitToken(parts.colon, colon_after);
+
+        if (has_value) {
+            const value_after: Separator = if (important)
+                .space
+            else if (parts.semicolon != null)
+                .none
+            else
+                after;
+            try self.renderSequence(values, null, value_after);
+        }
+
+        if (parts.important_bang) |bang| {
+            try self.serializer.emitToken(bang, .none);
+            try self.serializer.emitToken(
+                parts.important_ident.?,
+                if (parts.semicolon != null) .none else after,
+            );
+        }
+
+        if (parts.semicolon) |semicolon| {
+            try self.serializer.emitToken(semicolon, after);
+        }
+    }
+
+    fn declarationParts(
+        self: Renderer,
+        node: ast.Index,
+        important: bool,
+    ) RenderError!DeclarationParts {
+        const range = self.tree.nodeRange(node);
+        const name = self.tree.nodes.items(.main_token)[node];
+        if (name < range.start or name >= range.end) {
+            return error.MalformedDeclaration;
+        }
+
+        var token = name + 1;
+        while (token < range.end) : (token += 1) switch (self.tree.tokenTag(token)) {
+            .whitespace, .comment => continue,
+            else => break,
+        };
+        if (token >= range.end or self.tree.tokenTag(token) != .colon) {
+            return error.MalformedDeclaration;
+        }
+
+        var result = DeclarationParts{
+            .colon = token,
+        };
+        if (self.tree.nodeHasClosingToken(node, .semicolon)) {
+            result.semicolon = self.tree.lastToken(node).?;
+        }
+
+        if (!important) return result;
+
+        var cursor = result.semicolon orelse range.end;
+        result.important_ident = self.previousSignificantToken(&cursor, result.colon + 1);
+        result.important_bang = self.previousSignificantToken(&cursor, result.colon + 1);
+
+        const ident = result.important_ident orelse return error.MalformedDeclaration;
+        const bang = result.important_bang orelse return error.MalformedDeclaration;
+        if (self.tree.tokenTag(ident) != .ident or
+            self.tree.tokenTag(bang) != .delim or
+            !std.mem.eql(u8, self.tree.tokenSlice(bang), "!"))
+        {
+            return error.MalformedDeclaration;
+        }
+
+        return result;
+    }
+
+    fn previousSignificantToken(
+        self: Renderer,
+        cursor: *TokenIndex,
+        lower_bound: TokenIndex,
+    ) ?TokenIndex {
+        while (cursor.* > lower_bound) {
+            cursor.* -= 1;
+            switch (self.tree.tokenTag(cursor.*)) {
+                .whitespace, .comment => continue,
+                else => return cursor.*,
+            }
+        }
+        return null;
+    }
+
     fn renderSequence(
         self: *Renderer,
         children: []const ast.Index,
@@ -670,6 +793,12 @@ const Renderer = struct {
     ) Separator {
         if (self.nodeIsToken(next, .comma)) return .none;
         if (self.nodeIsToken(current, .comma)) return .space;
+        const tags = self.tree.nodes.items(.tag);
+        if (tags[current] == .declaration_list or
+            tags[next] == .declaration_list)
+        {
+            return .newline;
+        }
         return if (whitespace) .preserve else .none;
     }
 
@@ -748,6 +877,13 @@ const Renderer = struct {
     fn eofToken(self: Renderer) TokenIndex {
         return @intCast(self.tree.tokens.len - 1);
     }
+};
+
+const DeclarationParts = struct {
+    colon: TokenIndex,
+    important_bang: ?TokenIndex = null,
+    important_ident: ?TokenIndex = null,
+    semicolon: ?TokenIndex = null,
 };
 
 const PreviousToken = struct {

@@ -56,6 +56,7 @@ Lightweight, dependency-free CSS formatter written in Zig.
 | Token serialization | §9 | implemented |
 | Printer entry point | — | implemented |
 | AST renderer | — | in progress |
+| Declaration rendering | §5.4.5, §5.4.7 | implemented |
 | Separator selection | — | in progress |
 | Synthetic token rendering | — | not started |
 | Comment placement | — | in progress |
