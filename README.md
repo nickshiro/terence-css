@@ -54,11 +54,11 @@ Lightweight, dependency-free CSS formatter written in Zig.
 | Consume a unicode-range value | §5.5.11 | implemented |
 | Printer/Formatter | — | in progress |
 | Token serialization | §9 | implemented |
-| Printer entry point | — | not started |
-| AST renderer | — | not started |
-| Separator selection | — | not started |
+| Printer entry point | — | implemented |
+| AST renderer | — | in progress |
+| Separator selection | — | in progress |
 | Synthetic token rendering | — | not started |
-| Comment placement | — | not started |
-| Malformed CSS recovery rendering | — | not started |
+| Comment placement | — | in progress |
+| Malformed CSS recovery rendering | — | implemented |
 | Auto-indenting writer | — | implemented |
-| Printer idempotence verification | — | not started |
+| Printer idempotence verification | — | in progress |

@@ -167,6 +167,164 @@ test "auto-indenting writer: composes with token serializer" {
     try testing.expectEqualStrings("  a\n  b", output.written());
 }
 
+test "renderer: trims outer trivia and preserves semantic whitespace" {
+    const source = " \n/*head*/ a  >\tb /*tail*/ \n";
+    const actual = try renderComponentValues(testing.allocator, source);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "/*head*/a  >\tb/*tail*/",
+        actual,
+    );
+}
+
+test "renderer: formats nested functions simple blocks and commas" {
+    const source = "fn(  a,b ,c,[x,y],{ z } )";
+    const actual = try renderComponentValues(testing.allocator, source);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "fn(  a, b, c, [x, y], { z } )",
+        actual,
+    );
+    try expectSameSignificantTags(source, actual);
+}
+
+test "renderer: retains comments while normalizing comma spacing" {
+    const actual = try renderComponentValues(
+        testing.allocator,
+        "fn(a/*before*/,/*after*/b)",
+    );
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "fn(a/*before*/, /*after*/ b)",
+        actual,
+    );
+}
+
+test "renderer: does not synthesize implicit function and block closers" {
+    const cases = [_][]const u8{
+        "fn(a",
+        "(a",
+        "[a",
+        "{a",
+    };
+
+    for (cases) |source| {
+        const actual = try renderComponentValues(testing.allocator, source);
+        defer testing.allocator.free(actual);
+        try testing.expectEqualStrings(source, actual);
+    }
+}
+
+test "renderer: emits every explicit simple block closer" {
+    const source = "([a]{b}fn(c))";
+    const actual = try renderComponentValues(testing.allocator, source);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(source, actual);
+}
+
+test "renderer: formats comma-separated roots including empty groups" {
+    var tree = try Ast.parseCommaSeparatedComponentValues(
+        testing.allocator,
+        ",a,, b,",
+    );
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(", a,, b,", actual);
+}
+
+test "renderer: renders invalid grammar groups structurally" {
+    const grammar = Ast.Grammar{
+        .matchFn = struct {
+            fn rejectAll(_: ?*const anyopaque, _: Ast, _: []const ast.Index) bool {
+                return false;
+            }
+        }.rejectAll,
+    };
+    var tree = try Ast.parseCommaSeparatedAccordingToGrammar(
+        testing.allocator,
+        "a,b",
+        grammar,
+    );
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings("a, b", actual);
+}
+
+test "renderer: preserves invalid recovery ranges exactly" {
+    const source = "broken ???;";
+    var tree = try Ast.parseBlockContents(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(source, actual);
+}
+
+test "renderer: handles empty whitespace-only and comment-only roots" {
+    const cases = [_]struct {
+        source: []const u8,
+        expected: []const u8,
+    }{
+        .{ .source = "", .expected = "" },
+        .{ .source = " \n\t ", .expected = "" },
+        .{ .source = " /*one*/ \n/*two*/ ", .expected = "/*one*//*two*/" },
+    };
+
+    for (cases) |case| {
+        const actual = try renderComponentValues(testing.allocator, case.source);
+        defer testing.allocator.free(actual);
+        try testing.expectEqualStrings(case.expected, actual);
+    }
+}
+
+test "renderer: rejects rule and declaration nodes until their phase" {
+    var declaration = try Ast.parseDeclaration(testing.allocator, "color: red");
+    defer declaration.deinit(testing.allocator);
+    var declaration_output: std.Io.Writer.Discarding = .init(&.{});
+    try testing.expectError(
+        error.UnsupportedNode,
+        printer.render(declaration, &declaration_output.writer, .{}),
+    );
+
+    var stylesheet = try Ast.parseStylesheet(testing.allocator, "a { color: red; }");
+    defer stylesheet.deinit(testing.allocator);
+    var stylesheet_output: std.Io.Writer.Discarding = .init(&.{});
+    try testing.expectError(
+        error.UnsupportedNode,
+        printer.render(stylesheet, &stylesheet_output.writer, .{}),
+    );
+}
+
+test "renderer: propagates downstream failures" {
+    var tree = try Ast.parseComponentValues(testing.allocator, "a");
+    defer tree.deinit(testing.allocator);
+    var downstream: std.Io.Writer = .failing;
+
+    try testing.expectError(
+        error.WriteFailed,
+        printer.render(tree, &downstream, .{}),
+    );
+}
+
+test "renderer: component-value formatting is idempotent" {
+    const source = " fn(a,b , [c,d],{ e,f }) ";
+    const once = try renderComponentValues(testing.allocator, source);
+    defer testing.allocator.free(once);
+    const twice = try renderComponentValues(testing.allocator, once);
+    defer testing.allocator.free(twice);
+
+    try testing.expectEqualStrings("fn(a, b, [c, d], { e, f })", once);
+    try testing.expectEqualStrings(once, twice);
+}
+
 test "token serializer: CSS Syntax unsafe-pair table (§9)" {
     const left = [_]Sample{
         .{ .tag = .ident, .text = "a" },
@@ -469,6 +627,22 @@ fn expectSerialization(
     defer testing.allocator.free(actual);
 
     try testing.expectEqualStrings(expected, actual);
+}
+
+fn renderComponentValues(
+    allocator: Allocator,
+    source: []const u8,
+) ![]u8 {
+    var tree = try Ast.parseComponentValues(allocator, source);
+    defer tree.deinit(allocator);
+    return renderTree(allocator, tree);
+}
+
+fn renderTree(allocator: Allocator, tree: Ast) ![]u8 {
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    errdefer output.deinit();
+    try printer.render(tree, &output.writer, .{});
+    return output.toOwnedSlice();
 }
 
 fn serialize(

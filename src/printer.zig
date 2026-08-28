@@ -479,6 +479,277 @@ pub const TokenSerializer = struct {
     }
 };
 
+pub const RenderOptions = struct {
+    indent_width: usize = 2,
+};
+
+pub const RenderError = TokenSerializer.Error ||
+    AutoIndentingWriter.IndentError ||
+    error{UnsupportedNode};
+
+/// Renders the AST node families used by the component-value parser. Rule and
+/// declaration rendering is added separately so unsupported semantic nodes
+/// fail explicitly instead of silently replaying their source.
+pub fn render(
+    tree: Ast,
+    downstream: *Writer,
+    options: RenderOptions,
+) RenderError!void {
+    var indented: AutoIndentingWriter = .init(
+        downstream,
+        .{ .indent_width = options.indent_width },
+    );
+    var serializer: TokenSerializer = .init(tree, &indented.writer);
+    var renderer = Renderer{
+        .tree = tree,
+        .serializer = &serializer,
+        .indented = &indented,
+    };
+
+    try renderer.renderNode(tree.root, .none);
+    try serializer.finish();
+    try indented.writer.flush();
+}
+
+const Renderer = struct {
+    tree: Ast,
+    serializer: *TokenSerializer,
+    indented: *AutoIndentingWriter,
+
+    fn renderNode(
+        self: *Renderer,
+        node: ast.Index,
+        after: Separator,
+    ) RenderError!void {
+        const tags = self.tree.nodes.items(.tag);
+        const main_tokens = self.tree.nodes.items(.main_token);
+
+        switch (tags[node]) {
+            .root => try self.renderRoot(node),
+            .component_value_list,
+            .component_value_list_invalid,
+            => try self.renderSequence(
+                self.tree.extraChildren(node),
+                null,
+                after,
+            ),
+            .invalid => try self.serializer.emitRaw(
+                self.tree.nodeRange(node),
+                after,
+            ),
+            .token => {
+                const token = main_tokens[node];
+                if (self.tree.tokenTag(token) != .whitespace) {
+                    try self.serializer.emitToken(token, after);
+                }
+            },
+            .simple_block_brace => try self.renderContainer(
+                node,
+                .r_brace,
+                after,
+            ),
+            .simple_block_bracket => try self.renderContainer(
+                node,
+                .r_bracket,
+                after,
+            ),
+            .simple_block_paren,
+            .function,
+            => try self.renderContainer(node, .r_paren, after),
+            .at_rule,
+            .qualified_rule,
+            .block,
+            .declaration_list,
+            .declaration,
+            .declaration_important,
+            => return error.UnsupportedNode,
+        }
+    }
+
+    fn renderRoot(self: *Renderer, node: ast.Index) RenderError!void {
+        const children = self.tree.extraChildren(node);
+        if (self.isCommaSeparatedRoot(children)) {
+            try self.renderCommaSeparatedRoot(children);
+        } else {
+            try self.renderSequence(children, null, .none);
+        }
+    }
+
+    fn renderCommaSeparatedRoot(
+        self: *Renderer,
+        groups: []const ast.Index,
+    ) RenderError!void {
+        for (groups, 0..) |group, group_index| {
+            try self.renderNode(group, .none);
+
+            const range = self.tree.nodeRange(group);
+            if (range.end >= self.eofToken() or
+                self.tree.tokenTag(range.end) != .comma)
+            {
+                continue;
+            }
+
+            const has_next_value = group_index + 1 < groups.len and
+                self.nodeEmitsToken(groups[group_index + 1]);
+            try self.serializer.emitToken(
+                range.end,
+                if (has_next_value) .space else .none,
+            );
+        }
+    }
+
+    fn renderContainer(
+        self: *Renderer,
+        node: ast.Index,
+        closing_tag: TokenTag,
+        after: Separator,
+    ) RenderError!void {
+        const children = self.tree.extraChildren(node);
+        const closing_token: ?TokenIndex = if (self.tree.nodeHasClosingToken(
+            node,
+            closing_tag,
+        )) self.tree.lastToken(node).? else null;
+        const first_child = self.nextRenderable(children, 0);
+        const leading_whitespace = self.hasWhitespace(
+            children,
+            0,
+            first_child orelse children.len,
+        );
+        const opening_after: Separator = if (first_child != null or
+            closing_token != null)
+            if (leading_whitespace) .preserve else .none
+        else
+            after;
+
+        const opening_token = self.tree.nodes.items(.main_token)[node];
+        try self.serializer.emitToken(opening_token, opening_after);
+        try self.renderSequence(children, closing_token, after);
+
+        if (closing_token) |token| {
+            try self.serializer.emitToken(token, after);
+        }
+    }
+
+    fn renderSequence(
+        self: *Renderer,
+        children: []const ast.Index,
+        closing_token: ?TokenIndex,
+        after: Separator,
+    ) RenderError!void {
+        var search_from: usize = 0;
+        while (self.nextRenderable(children, search_from)) |current_index| {
+            const next_index = self.nextRenderable(children, current_index + 1);
+            const gap_end = next_index orelse children.len;
+            const whitespace = self.hasWhitespace(
+                children,
+                current_index + 1,
+                gap_end,
+            );
+
+            const separator: Separator = if (next_index) |next|
+                self.separatorBetween(
+                    children[current_index],
+                    children[next],
+                    whitespace,
+                )
+            else if (closing_token != null)
+                self.separatorBeforeClosing(children[current_index], whitespace)
+            else
+                after;
+
+            try self.renderNode(children[current_index], separator);
+            search_from = current_index + 1;
+        }
+    }
+
+    fn separatorBetween(
+        self: Renderer,
+        current: ast.Index,
+        next: ast.Index,
+        whitespace: bool,
+    ) Separator {
+        if (self.nodeIsToken(next, .comma)) return .none;
+        if (self.nodeIsToken(current, .comma)) return .space;
+        return if (whitespace) .preserve else .none;
+    }
+
+    fn separatorBeforeClosing(
+        self: Renderer,
+        current: ast.Index,
+        whitespace: bool,
+    ) Separator {
+        if (self.nodeIsToken(current, .comma)) return .none;
+        return if (whitespace) .preserve else .none;
+    }
+
+    fn isCommaSeparatedRoot(
+        self: Renderer,
+        children: []const ast.Index,
+    ) bool {
+        if (children.len == 0) return false;
+        const tags = self.tree.nodes.items(.tag);
+        for (children) |child| switch (tags[child]) {
+            .component_value_list, .component_value_list_invalid => {},
+            else => return false,
+        };
+        return true;
+    }
+
+    fn nextRenderable(
+        self: Renderer,
+        children: []const ast.Index,
+        start: usize,
+    ) ?usize {
+        for (children[start..], start..) |child, index| {
+            if (self.nodeEmitsToken(child)) return index;
+        }
+        return null;
+    }
+
+    fn nodeEmitsToken(self: Renderer, node: ast.Index) bool {
+        const tag = self.tree.nodes.items(.tag)[node];
+        return switch (tag) {
+            .token => self.tree.tokenTag(
+                self.tree.nodes.items(.main_token)[node],
+            ) != .whitespace,
+            .root,
+            .component_value_list,
+            .component_value_list_invalid,
+            => for (self.tree.extraChildren(node)) |child| {
+                if (self.nodeEmitsToken(child)) break true;
+            } else false,
+            .invalid => !self.tree.nodeRange(node).isEmpty(),
+            else => true,
+        };
+    }
+
+    fn hasWhitespace(
+        self: Renderer,
+        children: []const ast.Index,
+        start: usize,
+        end: usize,
+    ) bool {
+        for (children[start..end]) |child| {
+            if (self.nodeIsToken(child, .whitespace)) return true;
+        }
+        return false;
+    }
+
+    fn nodeIsToken(
+        self: Renderer,
+        node: ast.Index,
+        token_tag: TokenTag,
+    ) bool {
+        if (self.tree.nodes.items(.tag)[node] != .token) return false;
+        const token = self.tree.nodes.items(.main_token)[node];
+        return self.tree.tokenTag(token) == token_tag;
+    }
+
+    fn eofToken(self: Renderer) TokenIndex {
+        return @intCast(self.tree.tokens.len - 1);
+    }
+};
+
 const PreviousToken = struct {
     unsafe_rights: u16,
     requires_newline: bool,
