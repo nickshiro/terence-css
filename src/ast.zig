@@ -9,6 +9,19 @@ pub const TokenTag = tokenizer.Token.Tag;
 pub const Index = u32;
 pub const TokenIndex = u32;
 
+/// A half-open range of tokens. `end` is the index of the first token after
+/// the range and may point at the EOF token. Token ranges describe tokens that
+/// were actually present in the source; an omitted closing token is therefore
+/// not part of a node's range.
+pub const TokenRange = struct {
+    start: TokenIndex,
+    end: TokenIndex,
+
+    pub fn isEmpty(self: TokenRange) bool {
+        return self.start == self.end;
+    }
+};
+
 pub const Node = struct {
     tag: Tag,
     /// For .token, this is the token itself. For blocks, this is the opening
@@ -16,6 +29,9 @@ pub const Node = struct {
     /// the first syntax token. It is unused for .root,
     /// .component_value_list, and .component_value_list_invalid.
     main_token: TokenIndex,
+    /// Complete source extent of this node, including a terminator or closing
+    /// token when it was present in the input.
+    range: TokenRange,
     data: Data,
 
     pub const Data = struct { lhs: Index = 0, rhs: Index = 0 };
@@ -56,9 +72,16 @@ pub const Node = struct {
         /// A declaration whose top-level value ends with !important.
         declaration_important,
 
+        /// Source that the CSS parser discarded while recovering. Its exact
+        /// token range is retained so tools such as formatters do not lose
+        /// malformed input. Invalid nodes have no children.
+        invalid,
+
         /// One preserved token as a component value. main_token is the token
-        /// itself. Covers ident/number/string/delim/whitespace/comment/colon/etc:
+        /// itself. Covers ident/number/string/delim/whitespace/colon/etc:
         /// everything that is not a {}/[]/() block or a function.
+        /// Comments are preserved in Ast.tokens as trivia and never become
+        /// semantic component-value nodes.
         token,
 
         /// {} block. main_token is '{'. data is a range in extra_data containing
@@ -184,15 +207,54 @@ pub const Ast = struct {
         return self.tokens.items(.tag)[token];
     }
 
+    pub fn tokenStart(self: Ast, token: TokenIndex) u32 {
+        return self.tokens.items(.start)[token];
+    }
+
     pub fn tokenSlice(self: Ast, token: TokenIndex) []const u8 {
         const starts = self.tokens.items(.start);
         const ends = self.tokens.items(.end);
         return self.source[starts[token]..ends[token]];
     }
 
+    pub fn nodeRange(self: Ast, node: Index) TokenRange {
+        return self.nodes.items(.range)[node];
+    }
+
+    pub fn firstToken(self: Ast, node: Index) TokenIndex {
+        return self.nodeRange(node).start;
+    }
+
+    pub fn lastToken(self: Ast, node: Index) ?TokenIndex {
+        const range = self.nodeRange(node);
+        return if (range.isEmpty()) null else range.end - 1;
+    }
+
+    /// Returns the original source covered by a half-open token range.
+    pub fn tokenRangeSlice(self: Ast, range: TokenRange) []const u8 {
+        std.debug.assert(range.start <= range.end);
+        std.debug.assert(range.end < self.tokens.len);
+        return self.source[self.tokenStart(range.start)..self.tokenStart(range.end)];
+    }
+
+    pub fn nodeSlice(self: Ast, node: Index) []const u8 {
+        return self.tokenRangeSlice(self.nodeRange(node));
+    }
+
+    /// Whether the last source token belonging to `node` is `closing_tag`.
+    /// This distinguishes explicit delimiters from CSS's implicit EOF closure.
+    pub fn nodeHasClosingToken(
+        self: Ast,
+        node: Index,
+        closing_tag: TokenTag,
+    ) bool {
+        const token = self.lastToken(node) orelse return false;
+        return self.tokenTag(token) == closing_tag;
+    }
+
     /// Returns child nodes for roots, component-value lists, rules, blocks,
-    /// declaration lists, simple blocks, and functions.
-    /// Panics for .token because leaf nodes have no children.
+    /// declaration lists, simple blocks, and functions. Leaf nodes return an
+    /// empty slice.
     pub fn extraChildren(self: Ast, node: Index) []const Index {
         const data = self.nodes.items(.data)[node];
         return self.extra_data[data.lhs..data.rhs];
@@ -243,6 +305,12 @@ pub const Ast = struct {
                 for (self.extraChildren(node)) |child| {
                     try self.dumpNode(writer, child, depth + 1);
                 }
+            },
+
+            .invalid => {
+                try writer.print("invalid \"{f}\"\n", .{
+                    std.zig.fmtString(self.nodeSlice(node)),
+                });
             },
 
             .token => {

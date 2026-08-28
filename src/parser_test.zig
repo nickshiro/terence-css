@@ -19,6 +19,12 @@ fn expectTokenNode(tree: Ast, node: Index, tag: TokenTag, text: []const u8) !voi
     try testing.expectEqualStrings(text, tree.tokenSlice(token));
 }
 
+fn expectInvalidNode(tree: Ast, node: Index, text: []const u8) !void {
+    try testing.expectEqual(Node.Tag.invalid, nodeTag(tree, node));
+    try testing.expectEqualStrings(text, tree.nodeSlice(node));
+    try testing.expectEqual(@as(usize, 0), tree.extraChildren(node).len);
+}
+
 fn expectContainer(
     tree: Ast,
     node: Index,
@@ -277,12 +283,13 @@ test "comma-separated component values parser: preserves trivia inside groups" {
     defer tree.deinit(testing.allocator);
 
     const root_children = tree.extraChildren(tree.root);
-    const first = try expectComponentValueList(tree, root_children[0], 4);
+    const first = try expectComponentValueList(tree, root_children[0], 3);
     const second = try expectComponentValueList(tree, root_children[1], 3);
     try expectTokenNode(tree, first[0], .whitespace, " ");
-    try expectTokenNode(tree, first[3], .comment, "/**/");
+    try expectTokenNode(tree, first[2], .whitespace, " ");
     try expectTokenNode(tree, second[0], .whitespace, " ");
     try expectTokenNode(tree, second[2], .whitespace, " ");
+    try testing.expectEqualStrings(" a /**/", tree.nodeSlice(root_children[0]));
 }
 
 test "comma-separated component values parser: reports an unexpected closing brace" {
@@ -308,8 +315,8 @@ test "grammar parser: returns component values that match the grammar" {
     defer tree.deinit(testing.allocator);
 
     const root_children = tree.extraChildren(tree.root);
-    try testing.expectEqual(@as(usize, 5), root_children.len);
-    try expectTokenNode(tree, root_children[3], .ident, "red");
+    try testing.expectEqual(@as(usize, 4), root_children.len);
+    try expectTokenNode(tree, root_children[2], .ident, "red");
     try testing.expectEqual(@as(usize, 0), tree.errors.len);
 }
 
@@ -399,18 +406,19 @@ test "parser: empty source produces an empty root" {
     try testing.expectEqual(@as(usize, 0), tree.errors.len);
 }
 
-test "parser: preserved tokens remain top-level component values" {
+test "parser: comments remain token trivia rather than component values" {
     var tree = try Ast.parseComponentValues(testing.allocator, "a /**/ 42)");
     defer tree.deinit(testing.allocator);
 
     const children = tree.extraChildren(tree.root);
-    try testing.expectEqual(@as(usize, 6), children.len);
+    try testing.expectEqual(@as(usize, 5), children.len);
     try expectTokenNode(tree, children[0], .ident, "a");
     try expectTokenNode(tree, children[1], .whitespace, " ");
-    try expectTokenNode(tree, children[2], .comment, "/**/");
-    try expectTokenNode(tree, children[3], .whitespace, " ");
-    try expectTokenNode(tree, children[4], .number, "42");
-    try expectTokenNode(tree, children[5], .r_paren, ")");
+    try expectTokenNode(tree, children[2], .whitespace, " ");
+    try expectTokenNode(tree, children[3], .number, "42");
+    try expectTokenNode(tree, children[4], .r_paren, ")");
+    try testing.expectEqual(TokenTag.comment, tree.tokenTag(2));
+    try testing.expectEqualStrings("a /**/ 42)", tree.nodeSlice(tree.root));
 }
 
 test "parser: groups each simple block kind" {
@@ -631,7 +639,9 @@ test "stylesheet parser: rejects a qualified rule without a block" {
     var tree = try Ast.parseStylesheet(testing.allocator, "a");
     defer tree.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 0), tree.extraChildren(tree.root).len);
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 1), children.len);
+    try expectInvalidNode(tree, children[0], "a");
     try testing.expectEqual(@as(usize, 1), tree.errors.len);
     try testing.expectEqual(Ast.Error.Tag.qualified_rule_without_block, tree.errors[0].tag);
     try testing.expectEqual(TokenTag.eof, tree.tokenTag(tree.errors[0].token));
@@ -654,8 +664,9 @@ test "stylesheet parser: rejects a qualified rule shaped like a custom property"
     defer tree.deinit(testing.allocator);
 
     const root_children = tree.extraChildren(tree.root);
-    try testing.expectEqual(@as(usize, 1), root_children.len);
-    _ = try expectContainer(tree, root_children[0], .qualified_rule, ".", 4);
+    try testing.expectEqual(@as(usize, 2), root_children.len);
+    try expectInvalidNode(tree, root_children[0], "--foo: bar {}");
+    _ = try expectContainer(tree, root_children[1], .qualified_rule, ".", 4);
     try testing.expectEqual(@as(usize, 0), tree.errors.len);
 }
 
@@ -783,7 +794,9 @@ test "rule parser: rejects a qualified rule without a block" {
     var tree = try Ast.parseRule(testing.allocator, "a:hover");
     defer tree.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 0), tree.extraChildren(tree.root).len);
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 1), children.len);
+    try expectInvalidNode(tree, children[0], "a:hover");
     try testing.expectEqual(@as(usize, 1), tree.errors.len);
     try testing.expectEqual(Ast.Error.Tag.qualified_rule_without_block, tree.errors[0].tag);
 }
@@ -792,7 +805,9 @@ test "rule parser: rejects a custom-property-shaped rule" {
     var tree = try Ast.parseRule(testing.allocator, "--theme: red {}");
     defer tree.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 0), tree.extraChildren(tree.root).len);
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 1), children.len);
+    try expectInvalidNode(tree, children[0], "--theme: red {}");
     try testing.expectEqual(@as(usize, 1), tree.errors.len);
     try testing.expectEqual(Ast.Error.Tag.expected_rule, tree.errors[0].tag);
     try testing.expectEqualStrings("--theme", tree.tokenSlice(tree.errors[0].token));
@@ -964,9 +979,11 @@ test "block contents parser: restores after a failed declaration" {
     defer tree.deinit(testing.allocator);
 
     const root_children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 2), root_children.len);
+    try expectInvalidNode(tree, root_children[0], "color red;");
     const declarations = try expectContainer(
         tree,
-        root_children[0],
+        root_children[1],
         .declaration_list,
         "width",
         1,
@@ -986,9 +1003,10 @@ test "block contents parser: an invalid rule separates declaration lists" {
     defer tree.deinit(testing.allocator);
 
     const root_children = tree.extraChildren(tree.root);
-    try testing.expectEqual(@as(usize, 2), root_children.len);
+    try testing.expectEqual(@as(usize, 3), root_children.len);
     _ = try expectContainer(tree, root_children[0], .declaration_list, "color", 1);
-    _ = try expectContainer(tree, root_children[1], .declaration_list, "width", 1);
+    try expectInvalidNode(tree, root_children[1], "broken value;");
+    _ = try expectContainer(tree, root_children[2], .declaration_list, "width", 1);
 
     try testing.expectEqual(@as(usize, 1), tree.errors.len);
     try testing.expectEqual(Ast.Error.Tag.qualified_rule_without_block, tree.errors[0].tag);
@@ -1192,7 +1210,9 @@ test "declaration parser: reports a missing name" {
     var tree = try Ast.parseDeclaration(testing.allocator, ": red;");
     defer tree.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 0), tree.extraChildren(tree.root).len);
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 1), children.len);
+    try expectInvalidNode(tree, children[0], ": red;");
     try testing.expectEqual(@as(usize, 1), tree.errors.len);
     try testing.expectEqual(Ast.Error.Tag.expected_declaration_name, tree.errors[0].tag);
     try testing.expectEqualStrings(":", tree.tokenSlice(tree.errors[0].token));
@@ -1202,7 +1222,9 @@ test "declaration parser: reports a missing colon" {
     var tree = try Ast.parseDeclaration(testing.allocator, "color red;");
     defer tree.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 0), tree.extraChildren(tree.root).len);
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 1), children.len);
+    try expectInvalidNode(tree, children[0], "color red;");
     try testing.expectEqual(@as(usize, 1), tree.errors.len);
     try testing.expectEqual(Ast.Error.Tag.expected_colon, tree.errors[0].tag);
     try testing.expectEqualStrings("red", tree.tokenSlice(tree.errors[0].token));
@@ -1239,7 +1261,9 @@ test "declaration parser: rejects mixed brace values for regular properties" {
     var tree = try Ast.parseDeclaration(testing.allocator, "color: red { fallback: blue }");
     defer tree.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 0), tree.extraChildren(tree.root).len);
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 1), children.len);
+    try expectInvalidNode(tree, children[0], "color: red { fallback: blue }");
     try testing.expectEqual(@as(usize, 1), tree.errors.len);
     try testing.expectEqual(Ast.Error.Tag.invalid_declaration_value, tree.errors[0].tag);
     try testing.expectEqualStrings("color", tree.tokenSlice(tree.errors[0].token));
@@ -1262,4 +1286,151 @@ test "declaration parser: stops the value at a semicolon" {
     const declaration_children = try expectContainer(tree, root_children[0], .declaration, "color", 1);
     try expectTokenNode(tree, declaration_children[0], .ident, "red");
     try testing.expectEqual(@as(usize, 0), tree.errors.len);
+}
+
+test "component values parser: removes comments but preserves whitespace tokens" {
+    var tree = try Ast.parseComponentValues(
+        testing.allocator,
+        "a/**/b a/**/ b fn(/**/ x /**/) [/**/]",
+    );
+    defer tree.deinit(testing.allocator);
+
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 10), children.len);
+    try expectTokenNode(tree, children[0], .ident, "a");
+    try expectTokenNode(tree, children[1], .ident, "b");
+    try expectTokenNode(tree, children[2], .whitespace, " ");
+    try expectTokenNode(tree, children[3], .ident, "a");
+    try expectTokenNode(tree, children[4], .whitespace, " ");
+    try expectTokenNode(tree, children[5], .ident, "b");
+    try expectTokenNode(tree, children[6], .whitespace, " ");
+
+    const function_children = try expectContainer(tree, children[7], .function, "fn(", 3);
+    try expectTokenNode(tree, function_children[0], .whitespace, " ");
+    try expectTokenNode(tree, function_children[1], .ident, "x");
+    try expectTokenNode(tree, function_children[2], .whitespace, " ");
+    try expectTokenNode(tree, children[8], .whitespace, " ");
+    _ = try expectContainer(tree, children[9], .simple_block_bracket, "[", 0);
+
+    var comments: usize = 0;
+    for (tree.tokens.items(.tag)) |tag| {
+        if (tag == .comment) comments += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), comments);
+}
+
+test "component values parser: a comment-only input has no semantic values" {
+    var tree = try Ast.parseComponentValues(testing.allocator, "/**//**/");
+    defer tree.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), tree.extraChildren(tree.root).len);
+    try testing.expectEqualStrings("/**//**/", tree.nodeSlice(tree.root));
+    try testing.expectEqual(TokenTag.comment, tree.tokenTag(0));
+    try testing.expectEqual(TokenTag.comment, tree.tokenTag(1));
+}
+
+test "stylesheet parser: comments are trivia in every structural context" {
+    const source = "/**/@media/**/ screen/**/{/**/a/**/{/**/color/**/:/**/red/**/;/**/}/**/}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+
+    const root_children = tree.extraChildren(tree.root);
+    const at_children = try expectContainer(tree, root_children[0], .at_rule, "@media", 3);
+    try expectTokenNode(tree, at_children[0], .whitespace, " ");
+    try expectTokenNode(tree, at_children[1], .ident, "screen");
+
+    // The block follows the prelude but comments never appear as children.
+    const at_rule_children = tree.extraChildren(root_children[0]);
+    const at_block = at_rule_children[at_rule_children.len - 1];
+    try testing.expectEqual(Node.Tag.block, nodeTag(tree, at_block));
+    const nested_rule = tree.extraChildren(at_block)[0];
+    const nested_children = tree.extraChildren(nested_rule);
+    try testing.expectEqual(@as(usize, 2), nested_children.len);
+    try expectTokenNode(tree, nested_children[0], .ident, "a");
+
+    const declaration_list = tree.extraChildren(nested_children[1])[0];
+    const declaration = tree.extraChildren(declaration_list)[0];
+    const value = tree.extraChildren(declaration);
+    try testing.expectEqual(@as(usize, 1), value.len);
+    try expectTokenNode(tree, value[0], .ident, "red");
+    try testing.expectEqualStrings(source, tree.nodeSlice(tree.root));
+}
+
+test "declaration parser: comments do not prevent important recognition" {
+    const source = "color/**/: red !/**/IMPORTANT/**/;";
+    var tree = try Ast.parseDeclaration(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+
+    const declaration = tree.extraChildren(tree.root)[0];
+    try testing.expectEqual(Node.Tag.declaration_important, nodeTag(tree, declaration));
+    const value = tree.extraChildren(declaration);
+    try testing.expectEqual(@as(usize, 1), value.len);
+    try expectTokenNode(tree, value[0], .ident, "red");
+    try testing.expectEqualStrings(source, tree.nodeSlice(declaration));
+    try testing.expect(tree.nodeHasClosingToken(declaration, .semicolon));
+}
+
+test "block contents parser: invalid declarations retain nested recovery tokens" {
+    const source = "broken value(fn(a;b), [c;d]); /**/ width:1px;";
+    var tree = try Ast.parseBlockContents(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 2), children.len);
+    try expectInvalidNode(tree, children[0], "broken value(fn(a;b), [c;d]);");
+
+    const declarations = try expectContainer(
+        tree,
+        children[1],
+        .declaration_list,
+        "width",
+        1,
+    );
+    _ = try expectContainer(tree, declarations[0], .declaration, "width", 1);
+    try testing.expectEqual(@as(usize, 1), tree.errors.len);
+    try testing.expectEqual(Ast.Error.Tag.qualified_rule_without_block, tree.errors[0].tag);
+}
+
+test "block contents parser: invalid recovery stops before the containing brace" {
+    var tree = try Ast.parseBlockContents(testing.allocator, "broken value/**/} width:1px;");
+    defer tree.deinit(testing.allocator);
+
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 1), children.len);
+    try expectInvalidNode(tree, children[0], "broken value/**/");
+    try testing.expectEqualStrings("}", tree.tokenSlice(tree.errors[0].token));
+    try testing.expectEqualStrings("broken value/**/} width:1px;", tree.nodeSlice(tree.root));
+}
+
+test "stylesheet parser: invalid and valid constructs keep source order" {
+    const source = "--theme: red {} /**/ @import \"a.css\"; a {} trailing";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+
+    const children = tree.extraChildren(tree.root);
+    try testing.expectEqual(@as(usize, 4), children.len);
+    try expectInvalidNode(tree, children[0], "--theme: red {}");
+    _ = try expectContainer(tree, children[1], .at_rule, "@import", 2);
+    _ = try expectContainer(tree, children[2], .qualified_rule, "a", 3);
+    try expectInvalidNode(tree, children[3], "trailing");
+    try testing.expectEqualStrings(source, tree.nodeSlice(tree.root));
+}
+
+test "stylesheet parser: ranges record explicit and implicit rule closure" {
+    var explicit = try Ast.parseStylesheet(testing.allocator, "a{color:red;}");
+    defer explicit.deinit(testing.allocator);
+    const explicit_rule = explicit.extraChildren(explicit.root)[0];
+    const explicit_block = explicit.extraChildren(explicit_rule)[1];
+    try testing.expect(explicit.nodeHasClosingToken(explicit_block, .r_brace));
+    try testing.expectEqualStrings("a{color:red;}", explicit.nodeSlice(explicit_rule));
+
+    var implicit = try Ast.parseStylesheet(testing.allocator, "a{color:red");
+    defer implicit.deinit(testing.allocator);
+    const implicit_rule = implicit.extraChildren(implicit.root)[0];
+    const implicit_block = implicit.extraChildren(implicit_rule)[1];
+    const declaration_list = implicit.extraChildren(implicit_block)[0];
+    const declaration = implicit.extraChildren(declaration_list)[0];
+    try testing.expect(!implicit.nodeHasClosingToken(implicit_block, .r_brace));
+    try testing.expect(!implicit.nodeHasClosingToken(declaration, .semicolon));
+    try testing.expectEqualStrings("a{color:red", implicit.nodeSlice(implicit_rule));
 }

@@ -10,6 +10,7 @@ const Ast = ast.Ast;
 const Node = ast.Node;
 const Index = ast.Index;
 const TokenIndex = ast.TokenIndex;
+const TokenRange = ast.TokenRange;
 
 const SourceRange = struct {
     start: u32,
@@ -342,7 +343,33 @@ const Parser = struct {
     }
 
     fn addTokenNode(self: *Parser, token: TokenIndex) error{OutOfMemory}!Index {
-        return self.addNode(.{ .tag = .token, .main_token = token, .data = .{} });
+        return self.addNode(.{
+            .tag = .token,
+            .main_token = token,
+            .range = .{ .start = token, .end = token + 1 },
+            .data = .{},
+        });
+    }
+
+    fn addInvalidNode(
+        self: *Parser,
+        range: TokenRange,
+    ) error{OutOfMemory}!Index {
+        std.debug.assert(range.start < range.end);
+        return self.addNode(.{
+            .tag = .invalid,
+            .main_token = range.start,
+            .range = range,
+            .data = .{},
+        });
+    }
+
+    fn eofToken(self: *Parser) TokenIndex {
+        return @intCast(self.tok_tags.len - 1);
+    }
+
+    fn fullRange(self: *Parser) TokenRange {
+        return .{ .start = 0, .end = self.eofToken() };
     }
 
     fn addExtraChildren(self: *Parser, children: []const Index) error{OutOfMemory}!Node.Data {
@@ -378,7 +405,12 @@ const Parser = struct {
     /// §5.5.7: Consume a list of component values.
     fn consumeComponentValueList(self: *Parser) error{OutOfMemory}!Index {
         const data = try self.consumeComponentValues(null);
-        return self.addNode(.{ .tag = .root, .main_token = 0, .data = data });
+        return self.addNode(.{
+            .tag = .root,
+            .main_token = 0,
+            .range = self.fullRange(),
+            .data = data,
+        });
     }
 
     fn consumeComponentValues(self: *Parser, stop_tag: ?TokenTag) error{OutOfMemory}!Node.Data {
@@ -389,6 +421,11 @@ const Parser = struct {
             const tag = self.tok_tags[self.tok_i];
             if (tag == .eof) {
                 break;
+            }
+
+            if (tag == .comment) {
+                self.discardComments();
+                continue;
             }
 
             if (stop_tag) |stop| {
@@ -416,10 +453,12 @@ const Parser = struct {
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (self.tok_tags[self.tok_i] != .eof) {
+            const group_start = self.tok_i;
             const data = try self.consumeComponentValues(.comma);
             const group = try self.addNode(.{
                 .tag = .component_value_list,
-                .main_token = 0,
+                .main_token = group_start,
+                .range = .{ .start = group_start, .end = self.tok_i },
                 .data = data,
             });
             try self.scratch.append(self.gpa, group);
@@ -437,7 +476,7 @@ const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        self.discardWhitespace();
+        self.discardTrivia();
         if (self.tok_tags[self.tok_i] == .eof) {
             try self.addError(.expected_component_value);
             return self.addRoot(self.scratch.items[scratch_top..]);
@@ -447,7 +486,7 @@ const Parser = struct {
         const extra_data_top = self.extra_data.items.len;
         const value = try self.consumeComponentValue();
 
-        self.discardWhitespace();
+        self.discardTrivia();
         if (self.tok_tags[self.tok_i] != .eof) {
             try self.addError(.unexpected_input_after_component_value);
             self.discardNodesSince(nodes_top, extra_data_top);
@@ -474,23 +513,40 @@ const Parser = struct {
                     try self.scratch.append(self.gpa, rule);
                 },
                 else => {
+                    const invalid_start = self.tok_i;
                     switch (try self.consumeQualifiedRule(null, false)) {
                         .rule => |rule| {
                             try self.scratch.append(self.gpa, rule);
                         },
-                        .nothing, .invalid => {},
+                        .invalid => {
+                            const invalid = try self.addInvalidNode(.{
+                                .start = invalid_start,
+                                .end = self.tok_i,
+                            });
+                            try self.scratch.append(self.gpa, invalid);
+                        },
                     }
                 },
             }
         }
 
         const data = try self.addExtraChildren(self.scratch.items[scratch_top..]);
-        return self.addNode(.{ .tag = .root, .main_token = 0, .data = data });
+        return self.addNode(.{
+            .tag = .root,
+            .main_token = 0,
+            .range = self.fullRange(),
+            .data = data,
+        });
     }
 
     fn parseBlockContentsEntry(self: *Parser) error{OutOfMemory}!Index {
         const data = try self.consumeBlockContents();
-        return self.addNode(.{ .tag = .root, .main_token = 0, .data = data });
+        return self.addNode(.{
+            .tag = .root,
+            .main_token = 0,
+            .range = self.fullRange(),
+            .data = data,
+        });
     }
 
     /// §5.4.6: Parse a rule.
@@ -498,7 +554,7 @@ const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        self.discardWhitespace();
+        self.discardTrivia();
         const first_token = self.tok_i;
         if (self.tok_tags[self.tok_i] == .eof) {
             try self.addError(.expected_rule);
@@ -507,6 +563,7 @@ const Parser = struct {
 
         const nodes_top = self.nodes.len;
         const extra_data_top = self.extra_data.items.len;
+        const errors_top = self.errors.items.len;
         var rule: ?Index = null;
         if (self.tok_tags[self.tok_i] == .at_keyword) {
             rule = try self.consumeAtRule(false);
@@ -515,10 +572,17 @@ const Parser = struct {
                 .rule => |parsed_rule| {
                     rule = parsed_rule;
                 },
-                .nothing => {
-                    try self.addErrorAt(.expected_rule, first_token);
+                .invalid => {
+                    if (self.errors.items.len == errors_top) {
+                        try self.addErrorAt(.expected_rule, first_token);
+                    }
+                    if (self.tok_i > first_token) {
+                        rule = try self.addInvalidNode(.{
+                            .start = first_token,
+                            .end = self.tok_i,
+                        });
+                    }
                 },
-                .invalid => {},
             }
         }
 
@@ -527,7 +591,7 @@ const Parser = struct {
             return self.addRoot(self.scratch.items[scratch_top..]);
         }
 
-        self.discardWhitespace();
+        self.discardTrivia();
         if (self.tok_tags[self.tok_i] != .eof) {
             try self.addError(.unexpected_input_after_rule);
             self.discardNodesSince(nodes_top, extra_data_top);
@@ -540,7 +604,12 @@ const Parser = struct {
 
     fn addRoot(self: *Parser, children: []const Index) error{OutOfMemory}!Index {
         const data = try self.addExtraChildren(children);
-        return self.addNode(.{ .tag = .root, .main_token = 0, .data = data });
+        return self.addNode(.{
+            .tag = .root,
+            .main_token = 0,
+            .range = self.fullRange(),
+            .data = data,
+        });
     }
 
     /// §5.4.7: Parse a declaration.
@@ -548,13 +617,25 @@ const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        self.discardWhitespace();
+        self.discardTrivia();
+        const invalid_start = self.tok_i;
         if (try self.consumeDeclaration(false)) |declaration| {
             try self.scratch.append(self.gpa, declaration);
+        } else if (self.tok_i > invalid_start) {
+            const invalid = try self.addInvalidNode(.{
+                .start = invalid_start,
+                .end = self.tok_i,
+            });
+            try self.scratch.append(self.gpa, invalid);
         }
 
         const data = try self.addExtraChildren(self.scratch.items[scratch_top..]);
-        return self.addNode(.{ .tag = .root, .main_token = 0, .data = data });
+        return self.addNode(.{
+            .tag = .root,
+            .main_token = 0,
+            .range = self.fullRange(),
+            .data = data,
+        });
     }
 
     /// §5.5.2: Consume an at-rule.
@@ -565,6 +646,9 @@ const Parser = struct {
 
         while (true) {
             switch (self.tok_tags[self.tok_i]) {
+                .comment => {
+                    self.discardComments();
+                },
                 .semicolon => {
                     _ = self.advance();
                     break;
@@ -592,12 +676,16 @@ const Parser = struct {
         }
 
         const data = try self.addExtraChildren(self.scratch.items[scratch_top..]);
-        return self.addNode(.{ .tag = .at_rule, .main_token = at_token, .data = data });
+        return self.addNode(.{
+            .tag = .at_rule,
+            .main_token = at_token,
+            .range = .{ .start = at_token, .end = self.tok_i },
+            .data = data,
+        });
     }
 
     const QualifiedRuleResult = union(enum) {
         rule: Index,
-        nothing,
         invalid,
     };
 
@@ -621,12 +709,17 @@ const Parser = struct {
                 return .invalid;
             }
 
+            if (current_tag == .comment) {
+                self.discardComments();
+                continue;
+            }
+
             switch (current_tag) {
                 .r_brace => {
                     try self.addError(.unexpected_closing_brace);
                     if (nested) {
                         self.discardNodesSince(nodes_top, extra_data_top);
-                        return .nothing;
+                        return .invalid;
                     }
 
                     const token = self.advance();
@@ -642,7 +735,7 @@ const Parser = struct {
                         }
 
                         self.discardNodesSince(nodes_top, extra_data_top);
-                        return .nothing;
+                        return .invalid;
                     }
 
                     const block = try self.consumeBlock();
@@ -651,6 +744,7 @@ const Parser = struct {
                     const rule = try self.addNode(.{
                         .tag = .qualified_rule,
                         .main_token = main_token,
+                        .range = .{ .start = main_token, .end = self.tok_i },
                         .data = data,
                     });
                     return .{ .rule = rule };
@@ -675,6 +769,7 @@ const Parser = struct {
         return self.addNode(.{
             .tag = .block,
             .main_token = open_token,
+            .range = .{ .start = open_token, .end = self.tok_i },
             .data = data,
         });
     }
@@ -708,15 +803,25 @@ const Parser = struct {
                     }
 
                     self.restore(checkpoint);
+                    const invalid_start = self.tok_i;
                     switch (try self.consumeQualifiedRule(.semicolon, true)) {
                         .rule => |rule| {
                             try self.flushDeclarations(declarations_top);
                             try self.scratch.append(self.gpa, rule);
                         },
                         .invalid => {
+                            if (self.tok_tags[self.tok_i] == .semicolon) {
+                                _ = self.advance();
+                            }
                             try self.flushDeclarations(declarations_top);
+                            if (self.tok_i > invalid_start) {
+                                const invalid = try self.addInvalidNode(.{
+                                    .start = invalid_start,
+                                    .end = self.tok_i,
+                                });
+                                try self.scratch.append(self.gpa, invalid);
+                            }
                         },
-                        .nothing => {},
                     }
                 },
             }
@@ -733,10 +838,15 @@ const Parser = struct {
 
         const declarations = self.decl_scratch.items[declarations_top..];
         const main_token = self.nodes.items(.main_token)[declarations[0]];
+        const ranges = self.nodes.items(.range);
         const data = try self.addExtraChildren(declarations);
         const list = try self.addNode(.{
             .tag = .declaration_list,
             .main_token = main_token,
+            .range = .{
+                .start = ranges[declarations[0]].start,
+                .end = ranges[declarations[declarations.len - 1]].end,
+            },
             .data = data,
         });
         self.decl_scratch.shrinkRetainingCapacity(declarations_top);
@@ -753,7 +863,7 @@ const Parser = struct {
                 const token = self.nodes.items(.main_token)[value];
                 const token_tag = self.tok_tags[token];
 
-                if (token_tag == .whitespace or token_tag == .comment) {
+                if (token_tag == .whitespace) {
                     continue;
                 }
             }
@@ -795,7 +905,7 @@ const Parser = struct {
         }
 
         const name_token = self.advance();
-        self.discardWhitespace();
+        self.discardTrivia();
 
         if (self.tok_tags[self.tok_i] != .colon) {
             try self.addError(.expected_colon);
@@ -805,7 +915,7 @@ const Parser = struct {
         }
 
         _ = self.advance();
-        self.discardWhitespace();
+        self.discardTrivia();
         const raw_value_start = self.tok_i;
 
         const scratch_top = self.scratch.items.len;
@@ -819,6 +929,9 @@ const Parser = struct {
         const values = self.scratch.items[scratch_top..];
         if (!self.isCustomPropertyName(name_token) and self.hasInvalidBraceValue(values)) {
             try self.addErrorAt(.invalid_declaration_value, name_token);
+            if (self.tok_tags[self.tok_i] == .semicolon) {
+                _ = self.advance();
+            }
             self.discardNodesSince(nodes_top, extra_data_top);
             return null;
         }
@@ -838,18 +951,29 @@ const Parser = struct {
             declaration_tag = .declaration_important;
         }
 
+        if (self.tok_tags[self.tok_i] == .semicolon) {
+            _ = self.advance();
+        }
+
         const declaration = try self.addNode(.{
             .tag = declaration_tag,
             .main_token = name_token,
+            .range = .{ .start = name_token, .end = self.tok_i },
             .data = data,
         });
         return declaration;
     }
 
-    fn discardWhitespace(self: *Parser) void {
+    fn discardTrivia(self: *Parser) void {
         while (self.tok_tags[self.tok_i] == .whitespace or
             self.tok_tags[self.tok_i] == .comment)
         {
+            _ = self.advance();
+        }
+    }
+
+    fn discardComments(self: *Parser) void {
+        while (self.tok_tags[self.tok_i] == .comment) {
             _ = self.advance();
         }
     }
@@ -863,6 +987,11 @@ const Parser = struct {
             const tag = self.tok_tags[self.tok_i];
             if (tag == .eof or tag == stop_tag) {
                 return;
+            }
+
+            if (tag == .comment) {
+                self.discardComments();
+                continue;
             }
 
             if (tag == .r_brace) {
@@ -895,6 +1024,9 @@ const Parser = struct {
                     }
 
                     _ = self.advance();
+                },
+                .comment => {
+                    self.discardComments();
                 },
                 else => {
                     _ = try self.consumeComponentValue();
@@ -951,7 +1083,7 @@ const Parser = struct {
         }
 
         const token = self.nodes.items(.main_token)[value];
-        return self.tok_tags[token] == .whitespace or self.tok_tags[token] == .comment;
+        return self.tok_tags[token] == .whitespace;
     }
 
     fn isTokenValue(
@@ -1087,12 +1219,22 @@ const Parser = struct {
                 break;
             }
 
+            if (tag == .comment) {
+                self.discardComments();
+                continue;
+            }
+
             const cv = try self.consumeComponentValue();
             try self.scratch.append(self.gpa, cv);
         }
 
         const data = try self.addExtraChildren(self.scratch.items[scratch_top..]);
-        return self.addNode(.{ .tag = node_tag, .main_token = open_token, .data = data });
+        return self.addNode(.{
+            .tag = node_tag,
+            .main_token = open_token,
+            .range = .{ .start = open_token, .end = self.tok_i },
+            .data = data,
+        });
     }
 
     /// §5.5.10: Consume a function.
@@ -1116,12 +1258,22 @@ const Parser = struct {
                 break;
             }
 
+            if (tag == .comment) {
+                self.discardComments();
+                continue;
+            }
+
             const cv = try self.consumeComponentValue();
             try self.scratch.append(self.gpa, cv);
         }
 
         const data = try self.addExtraChildren(self.scratch.items[scratch_top..]);
-        return self.addNode(.{ .tag = .function, .main_token = func_token, .data = data });
+        return self.addNode(.{
+            .tag = .function,
+            .main_token = func_token,
+            .range = .{ .start = func_token, .end = self.tok_i },
+            .data = data,
+        });
     }
 };
 
