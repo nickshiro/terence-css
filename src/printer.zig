@@ -180,6 +180,17 @@ pub const TokenSerializer = struct {
         return .{ .tree = tree, .writer = writer };
     }
 
+    /// Sets the formatting request for trivia before the next emitted item.
+    /// This is also valid before the first item, allowing a renderer to place
+    /// leading comments without emitting whitespace at the start of output.
+    pub fn requestSeparator(
+        self: *TokenSerializer,
+        separator: Separator,
+    ) Error!void {
+        try self.ensureActive();
+        self.pending_separator = separator;
+    }
+
     /// Emits one non-trivia source token. `after` becomes the formatting
     /// request for the source gap before the next emitted item.
     pub fn emitToken(
@@ -422,13 +433,17 @@ pub const TokenSerializer = struct {
 
     fn emitNormalizedGap(self: *TokenSerializer, until: TokenIndex) Error!bool {
         const tags = self.tree.tokens.items(.tag);
-        const has_comments = blk: {
+        const comment_count = blk: {
+            var count: usize = 0;
             for (self.cursor..until) |raw_index| {
                 const token: TokenIndex = @intCast(raw_index);
-                if (tags[token] == .comment) break :blk true;
+                if (tags[token] == .comment) count += 1;
             }
-            break :blk false;
+            break :blk count;
         };
+        const has_comments = comment_count != 0;
+        const has_previous = self.previous != null;
+        const has_next = until < self.eofToken();
 
         switch (self.pending_separator) {
             .none => {
@@ -442,16 +457,23 @@ pub const TokenSerializer = struct {
                 return has_comments;
             },
             .space, .newline, .blank_line => |separator| {
-                try self.writeSeparator(separator);
+                if (has_previous and (has_comments or has_next)) {
+                    try self.writeSeparator(separator);
+                }
+
+                var comments_left = comment_count;
                 for (self.cursor..until) |raw_index| {
                     const token: TokenIndex = @intCast(raw_index);
                     if (tags[token] == .comment) {
+                        comments_left -= 1;
                         try self.writer.writeAll(self.tree.tokenSlice(token));
-                        try self.writeSeparator(separator);
+                        if (comments_left != 0 or has_next) {
+                            try self.writeSeparator(separator);
+                        }
                     }
                 }
 
-                return true;
+                return has_comments or (has_previous and has_next);
             },
             .preserve => unreachable,
         }
@@ -586,7 +608,8 @@ const Renderer = struct {
         if (self.isCommaSeparatedRoot(children)) {
             try self.renderCommaSeparatedRoot(children);
         } else if (self.isRuleRoot(children)) {
-            try self.renderStructuralList(children, .blank_line, .none);
+            try self.serializer.requestSeparator(.newline);
+            try self.renderStructuralList(children, .blank_line, .newline);
         } else {
             try self.renderSequence(children, null, .none);
         }
@@ -673,19 +696,15 @@ const Renderer = struct {
 
         const keyword_after: Separator = if (has_prelude or parts.block != null)
             .space
-        else if (parts.semicolon != null)
-            .none
         else
-            after;
+            .none;
         try self.serializer.emitToken(keyword, keyword_after);
 
         if (has_prelude) {
             const prelude_after: Separator = if (parts.block != null)
                 .space
-            else if (parts.semicolon != null)
-                .none
             else
-                after;
+                .none;
             try self.renderPrelude(parts.prelude, prelude_after);
         }
 
@@ -693,6 +712,12 @@ const Renderer = struct {
             try self.renderBlock(block, after);
         } else if (parts.semicolon) |semicolon| {
             try self.serializer.emitToken(semicolon, after);
+        } else {
+            try self.serializer.emitTriviaUntil(self.tree.nodeRange(node).end);
+            try self.serializer.emitSynthetic(
+                .{ .tag = .semicolon, .text = ";" },
+                after,
+            );
         }
     }
 
@@ -837,19 +862,15 @@ const Renderer = struct {
 
         const colon_after: Separator = if (has_value or important)
             .space
-        else if (parts.semicolon != null)
-            .none
         else
-            after;
+            .none;
         try self.serializer.emitToken(parts.colon, colon_after);
 
         if (has_value) {
             const value_after: Separator = if (important)
                 .space
-            else if (parts.semicolon != null)
-                .none
             else
-                after;
+                .none;
             try self.renderSequence(values, null, value_after);
         }
 
@@ -857,12 +878,18 @@ const Renderer = struct {
             try self.serializer.emitToken(bang, .none);
             try self.serializer.emitToken(
                 parts.important_ident.?,
-                if (parts.semicolon != null) .none else after,
+                .none,
             );
         }
 
         if (parts.semicolon) |semicolon| {
             try self.serializer.emitToken(semicolon, after);
+        } else {
+            try self.serializer.emitTriviaUntil(self.tree.nodeRange(node).end);
+            try self.serializer.emitSynthetic(
+                .{ .tag = .semicolon, .text = ";" },
+                after,
+            );
         }
     }
 

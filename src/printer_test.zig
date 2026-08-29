@@ -285,15 +285,15 @@ test "renderer: handles empty whitespace-only and comment-only roots" {
     }
 }
 
-test "renderer: formats declarations and preserves semicolon ownership" {
+test "renderer: formats declarations with canonical semicolons" {
     const cases = [_]struct {
         source: []const u8,
         expected: []const u8,
     }{
         .{ .source = "  color : red  ; ", .expected = "color: red;" },
-        .{ .source = "opacity:.5", .expected = "opacity: .5" },
+        .{ .source = "opacity:.5", .expected = "opacity: .5;" },
         .{ .source = "empty:;", .expected = "empty:;" },
-        .{ .source = "empty:   ", .expected = "empty:" },
+        .{ .source = "empty:   ", .expected = "empty:;" },
         .{ .source = "empty:   ;", .expected = "empty:;" },
     };
 
@@ -317,7 +317,7 @@ test "renderer: reconstructs important from source tokens" {
         },
         .{
             .source = "color:red !\\69mportant",
-            .expected = "color: red !\\69mportant",
+            .expected = "color: red !\\69mportant;",
         },
         .{
             .source = "color:!important;",
@@ -453,7 +453,7 @@ test "renderer: formats qualified rules and declaration blocks" {
         "a:hover, .b > c {\n  color: red;\n  width: 1px;\n}",
         actual,
     );
-    try expectSameSignificantTags(source, actual);
+    try expectSameSignificantTagsAllowingSyntheticSemicolons(source, actual);
 }
 
 test "renderer: supports terminated and EOF-terminated at-rules" {
@@ -465,7 +465,7 @@ test "renderer: supports terminated and EOF-terminated at-rules" {
             .source = "@import   url(theme.css) ;",
             .expected = "@import url(theme.css);",
         },
-        .{ .source = "@charset \"UTF-8\"", .expected = "@charset \"UTF-8\"" },
+        .{ .source = "@charset \"UTF-8\"", .expected = "@charset \"UTF-8\";" },
         .{ .source = "@layer;", .expected = "@layer;" },
         .{
             .source = "@import/**/\"x.css\"/**/;",
@@ -479,7 +479,7 @@ test "renderer: supports terminated and EOF-terminated at-rules" {
         const actual = try renderTree(testing.allocator, tree);
         defer testing.allocator.free(actual);
         try testing.expectEqualStrings(case.expected, actual);
-        try expectSameSignificantTags(case.source, actual);
+        try expectSameSignificantTagsAllowingSyntheticSemicolons(case.source, actual);
     }
 }
 
@@ -493,12 +493,12 @@ test "renderer: formats block at-rules recursively" {
     try testing.expectEqualStrings(
         "@media screen and (width >= 1px) {\n" ++
             "  a {\n" ++
-            "    color: red\n" ++
+            "    color: red;\n" ++
             "  }\n" ++
             "}",
         actual,
     );
-    try expectSameSignificantTags(source, actual);
+    try expectSameSignificantTagsAllowingSyntheticSemicolons(source, actual);
 }
 
 test "renderer: separates top-level rules with blank lines" {
@@ -569,17 +569,41 @@ test "renderer: indents leading and trailing block comments" {
     );
 }
 
-test "renderer: does not synthesize omitted rule terminators" {
+test "renderer: synthesizes optional semicolons but not closing delimiters" {
     const cases = [_]struct {
         source: []const u8,
         expected: []const u8,
     }{
-        .{ .source = "a{color:red", .expected = "a {\n  color: red" },
+        .{ .source = "a{color:red", .expected = "a {\n  color: red;" },
         .{
             .source = "@media screen{a{color:red",
-            .expected = "@media screen {\n  a {\n    color: red",
+            .expected = "@media screen {\n  a {\n    color: red;",
         },
-        .{ .source = "@import \"x.css\"", .expected = "@import \"x.css\"" },
+        .{ .source = "@import \"x.css\"", .expected = "@import \"x.css\";" },
+    };
+
+    for (cases) |case| {
+        var tree = try Ast.parseStylesheet(testing.allocator, case.source);
+        defer tree.deinit(testing.allocator);
+        const actual = try renderTree(testing.allocator, tree);
+        defer testing.allocator.free(actual);
+        try testing.expectEqualStrings(case.expected, actual);
+    }
+}
+
+test "renderer: places synthetic semicolons after trailing inline comments" {
+    const cases = [_]struct {
+        source: []const u8,
+        expected: []const u8,
+    }{
+        .{
+            .source = "a{color:red/* value */}",
+            .expected = "a {\n  color: red/* value */;\n}",
+        },
+        .{
+            .source = "@charset \"UTF-8\"/* encoding */",
+            .expected = "@charset \"UTF-8\"/* encoding */;",
+        },
     };
 
     for (cases) |case| {
@@ -617,12 +641,33 @@ test "renderer: formats keyframe rule blocks without at-rule special cases" {
     try testing.expectEqualStrings(
         "@keyframes fade {\n" ++
             "  from {\n" ++
-            "    opacity: 0\n" ++
+            "    opacity: 0;\n" ++
             "  }\n\n" ++
             "  50%, to {\n" ++
-            "    opacity: 1\n" ++
+            "    opacity: 1;\n" ++
             "  }\n" ++
             "}",
+        actual,
+    );
+}
+
+test "renderer: keeps comments on their syntactic side of synthetic semicolons" {
+    const source =
+        "/* head */a{color:/* before */red/* value */;" ++
+        "/* between */width:1px}/* tail */";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "/* head */\n" ++
+            "a {\n" ++
+            "  color: /* before */ red/* value */;\n" ++
+            "  /* between */\n" ++
+            "  width: 1px;\n" ++
+            "}\n" ++
+            "/* tail */",
         actual,
     );
 }
@@ -1103,6 +1148,28 @@ fn expectSameSignificantTags(left: []const u8, right: []const u8) !void {
         const right_token = nextSignificant(&right_tokenizer);
         try testing.expectEqual(left_token.tag, right_token.tag);
         if (left_token.tag == .eof) break;
+    }
+}
+
+fn expectSameSignificantTagsAllowingSyntheticSemicolons(
+    source: []const u8,
+    formatted: []const u8,
+) !void {
+    var source_tokenizer: Tokenizer = .init(source);
+    var formatted_tokenizer: Tokenizer = .init(formatted);
+    var source_token = nextSignificant(&source_tokenizer);
+    var formatted_token = nextSignificant(&formatted_tokenizer);
+
+    while (true) {
+        if (formatted_token.tag == .semicolon and source_token.tag != .semicolon) {
+            formatted_token = nextSignificant(&formatted_tokenizer);
+            continue;
+        }
+
+        try testing.expectEqual(source_token.tag, formatted_token.tag);
+        if (source_token.tag == .eof) return;
+        source_token = nextSignificant(&source_tokenizer);
+        formatted_token = nextSignificant(&formatted_tokenizer);
     }
 }
 
