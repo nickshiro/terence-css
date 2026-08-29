@@ -1,9 +1,9 @@
 # Terence CSS
 
-Terence CSS is a portable, dependency-free CSS parsing and formatting engine
-that includes an embeddable Zig library, a native CLI formatter, and a WASM library.
+Terence CSS is a portable, dependency-free parsing and formatting
+engine that includes an embeddable Zig library, native CLI formatter, and WASM library.
 
-## Usage
+## Formatter CLI 
 
 Install the formatter as a development dependency:
 
