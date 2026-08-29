@@ -5,11 +5,13 @@ const Io = std.Io;
 const Ast = @import("ast.zig").Ast;
 const printer = @import("printer.zig");
 
+const Mode = enum { stdout, write, check };
+
 pub fn main(init: std.process.Init) !u8 {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 
-    var write = false;
+    var mode: Mode = .stdout;
     var first_path: usize = 1;
     while (first_path < args.len) : (first_path += 1) {
         const arg = args[first_path];
@@ -19,7 +21,14 @@ pub fn main(init: std.process.Init) !u8 {
         }
 
         if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--write")) {
-            write = true;
+            if (mode == .check) return usage(init.io);
+            mode = .write;
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--check")) {
+            if (mode == .write) return usage(init.io);
+            mode = .check;
             continue;
         }
 
@@ -32,7 +41,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     const paths = args[first_path..];
 
-    if (write) {
+    if (mode == .write) {
         if (paths.len == 0) {
             return usage(init.io);
         }
@@ -49,6 +58,27 @@ pub fn main(init: std.process.Init) !u8 {
         }
 
         return 0;
+    }
+
+    if (mode == .check) {
+        if (paths.len == 0) return usage(init.io);
+
+        var stdout_buf: [4096]u8 = undefined;
+        var stdout = Io.File.stdout().writer(init.io, &stdout_buf);
+        var clean = true;
+        for (paths) |path| {
+            if (std.mem.eql(u8, path, "-")) return usage(init.io);
+            const formatted = fileIsFormatted(init.io, init.gpa, path) catch |err| {
+                try reportError(init.io, path, err);
+                return 1;
+            };
+            if (!formatted) {
+                try stdout.interface.print("{s}\n", .{path});
+                clean = false;
+            }
+        }
+        try stdout.interface.flush();
+        return if (clean) 0 else 1;
     }
 
     if (paths.len > 1) {
@@ -105,6 +135,14 @@ fn formatFile(io: Io, allocator: Allocator, path: []const u8) !void {
     try atomic.replace(io);
 }
 
+fn fileIsFormatted(io: Io, allocator: Allocator, path: []const u8) !bool {
+    const source = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+    defer allocator.free(source);
+    const formatted = try formatCss(allocator, source, true);
+    defer allocator.free(formatted);
+    return std.mem.eql(u8, source, formatted);
+}
+
 fn formatCss(
     allocator: Allocator,
     source: []const u8,
@@ -130,7 +168,9 @@ fn formatCss(
 fn usage(io: Io) !u8 {
     var buffer: [4096]u8 = undefined;
     var stderr = Io.File.stderr().writer(io, &buffer);
-    try stderr.interface.writeAll("usage: terence-css [-w|--write] [FILE...]\n");
+    try stderr.interface.writeAll(
+        "usage: terence-css [-w|--write | -c|--check] [FILE...]\n",
+    );
     try stderr.interface.flush();
 
     return 2;

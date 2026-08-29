@@ -2,15 +2,22 @@
 
 Lightweight, dependency-free CSS formatter written in Zig.
 
+## Usage
+
+```sh
+terence-css [FILE|-]         # format to stdout
+terence-css --write FILE...  # format in place
+terence-css --check FILE...  # check formatting
+```
+
 ## Roadmap
 
 1. Define stable formatting rules and harden comment placement and idempotence.
-2. Create command-line interface for files and standard input.
-3. Add formatting options.
-4. Ensure idempotent output and reliable recovery for malformed CSS.
-5. Publish native binaries and an npm package for easy installation.
-6. Provide WASM build and lib for browser-based editors and playgrounds.
-7. Add other CSS-family languages?
+2. Add formatting options.
+3. Ensure idempotent output and reliable recovery for malformed CSS.
+4. Publish native binaries and an npm package for easy installation.
+5. Provide WASM build and lib for browser-based editors and playgrounds.
+6. Add other CSS-family languages?
 
 ## The project follows three principles:
 
