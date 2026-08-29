@@ -1,0 +1,7 @@
+broken {
+  color red;
+}
+
+@media screen {
+  a {
+    color: red;

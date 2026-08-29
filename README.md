@@ -72,13 +72,14 @@ Tokenizer -> Parser -> AST -> Printer
                        +-- WebAssembly/JavaScript (planned)
 ```
 
+The canonical layout, comment, recovery, and token-preservation rules are
+defined in [FORMATTING.md](FORMATTING.md).
+
 ## Roadmap
 
-1. Define stable formatting rules and harden comment placement and idempotence.
-2. Ensure idempotent output and reliable recovery for malformed CSS.
-3. Publish native binaries and an npm CLI package for easy installation.
-4. Provide a WASM npm package for browser-based editors and playgrounds.
-5. Add other CSS-family languages?
+1. Publish native binaries and an npm CLI package for easy installation.
+2. Provide a WASM npm package for browser-based editors and playgrounds.
+3. Add other CSS-family languages?
 
 ## The project follows three principles:
 
@@ -120,18 +121,19 @@ Tokenizer -> Parser -> AST -> Printer
 | Parse a list of component values | §5.4.9 | implemented |
 | Parse comma-separated component values | §5.4.10 | implemented |
 | Consume a unicode-range value | §5.5.11 | implemented |
-| Printer/Formatter | — | in progress |
+| Printer/Formatter | — | implemented |
 | Token serialization | §9 | implemented |
 | Printer entry point | — | implemented |
 | AST renderer | — | implemented |
 | Declaration rendering | §5.4.5, §5.4.7 | implemented |
 | Rule and block rendering | §5.5.2–§5.5.5 | implemented |
-| Separator selection | — | in progress |
-| Synthetic token rendering | — | not started |
-| Comment placement | — | in progress |
+| Separator selection | — | implemented |
+| Synthetic token rendering | — | implemented |
+| Comment placement | — | implemented |
 | Malformed CSS recovery rendering | — | implemented |
 | Auto-indenting writer | — | implemented |
-| Printer idempotence verification | — | in progress |
+| Printer idempotence verification | — | implemented |
+| Golden formatting specification | — | implemented |
 | Public Zig library API | — | implemented |
 | Native npm CLI package | — | not started |
 | WebAssembly npm package | — | not started |

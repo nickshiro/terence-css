@@ -37,7 +37,7 @@ test "public API: renders an AST without adding a final newline" {
     defer output.deinit();
     try terence_css.render(tree, &output.writer, .{});
 
-    try testing.expectEqualStrings("a {\n  color: red\n}", output.written());
+    try testing.expectEqualStrings("a {\n  color: red;\n}", output.written());
 }
 
 test "public API: formats recovered CSS and ensures a final newline by default" {
@@ -62,7 +62,7 @@ test "public API: supports indentation and final-newline options" {
     );
     defer testing.allocator.free(formatted);
 
-    try testing.expectEqualStrings("a {\n    color: red\n}", formatted);
+    try testing.expectEqualStrings("a {\n    color: red;\n}", formatted);
 }
 
 test "public API: writes formatted CSS to an arbitrary writer" {
@@ -76,7 +76,7 @@ test "public API: writes formatted CSS to an arbitrary writer" {
         .{},
     );
 
-    try testing.expectEqualStrings("a {\n  color: red\n}\n", output.written());
+    try testing.expectEqualStrings("a {\n  color: red;\n}\n", output.written());
 }
 
 test "public API: strict mode rejects parser diagnostics before writing" {

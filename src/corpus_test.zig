@@ -25,6 +25,75 @@ const fixtures = [_]Fixture{
     },
 };
 
+const GoldenFixture = struct {
+    name: []const u8,
+    source: []const u8,
+    expected: []const u8,
+    has_errors: bool = false,
+};
+
+const golden_fixtures = [_]GoldenFixture{
+    .{
+        .name = "format/structure",
+        .source = corpus.format_structure_input,
+        .expected = corpus.format_structure_expected,
+    },
+    .{
+        .name = "format/comments",
+        .source = corpus.format_comments_input,
+        .expected = corpus.format_comments_expected,
+    },
+    .{
+        .name = "format/recovery",
+        .source = corpus.format_recovery_input,
+        .expected = corpus.format_recovery_expected,
+        .has_errors = true,
+    },
+};
+
+test "format specification: golden fixtures" {
+    for (golden_fixtures) |fixture| {
+        const expected = std.mem.trimEnd(u8, fixture.expected, "\n");
+        const formatted = formatStylesheet(fixture.source) catch |err| {
+            reportFixture(fixture.name);
+            return err;
+        };
+        defer testing.allocator.free(formatted);
+
+        testing.expectEqualStrings(expected, formatted) catch |err| {
+            reportFixture(fixture.name);
+            return err;
+        };
+
+        const twice = formatStylesheet(formatted) catch |err| {
+            reportFixture(fixture.name);
+            return err;
+        };
+        defer testing.allocator.free(twice);
+        testing.expectEqualStrings(formatted, twice) catch |err| {
+            reportFixture(fixture.name);
+            return err;
+        };
+
+        expectSourceTokensAndOnlySyntheticSemicolons(
+            fixture.source,
+            formatted,
+        ) catch |err| {
+            reportFixture(fixture.name);
+            return err;
+        };
+
+        expectStableRecovery(.{
+            .name = fixture.name,
+            .source = fixture.source,
+            .has_errors = fixture.has_errors,
+        }, formatted) catch |err| {
+            reportFixture(fixture.name);
+            return err;
+        };
+    }
+}
+
 test "corpus: formatting is idempotent" {
     for (fixtures) |fixture| {
         const once = formatStylesheet(fixture.source) catch |err| {
@@ -46,7 +115,7 @@ test "corpus: formatting is idempotent" {
     }
 }
 
-test "corpus: formatting preserves significant AST tokens" {
+test "corpus: formatting preserves source tokens and only adds semicolons" {
     for (fixtures) |fixture| {
         const formatted = formatStylesheet(fixture.source) catch |err| {
             reportFixture(fixture.name);
@@ -54,7 +123,7 @@ test "corpus: formatting preserves significant AST tokens" {
         };
         defer testing.allocator.free(formatted);
 
-        expectSameSignificantTokens(fixture.source, formatted) catch |err| {
+        expectSourceTokensAndOnlySyntheticSemicolons(fixture.source, formatted) catch |err| {
             reportFixture(fixture.name);
             return err;
         };
@@ -87,7 +156,7 @@ fn formatStylesheet(source: []const u8) ![]u8 {
     return output.toOwnedSlice();
 }
 
-fn expectSameSignificantTokens(before: []const u8, after: []const u8) !void {
+fn expectSourceTokensAndOnlySyntheticSemicolons(before: []const u8, after: []const u8) !void {
     var before_tree = try Ast.parseStylesheet(testing.allocator, before);
     defer before_tree.deinit(testing.allocator);
     var after_tree = try Ast.parseStylesheet(testing.allocator, after);
@@ -95,24 +164,34 @@ fn expectSameSignificantTokens(before: []const u8, after: []const u8) !void {
 
     var before_cursor: usize = 0;
     var after_cursor: usize = 0;
-    while (true) {
-        const before_token = nextSignificantToken(before_tree, &before_cursor);
-        const after_token = nextSignificantToken(after_tree, &after_cursor);
-        try testing.expectEqual(before_token != null, after_token != null);
-
-        if (before_token == null) {
-            return;
+    var after_token = nextSignificantToken(after_tree, &after_cursor);
+    while (nextSignificantToken(before_tree, &before_cursor)) |before_token| {
+        while (after_token != null and
+            after_tree.tokenTag(after_token.?) == .semicolon and
+            before_tree.tokenTag(before_token) != .semicolon)
+        {
+            after_token = nextSignificantToken(after_tree, &after_cursor);
         }
 
-        try testing.expectEqual(
-            before_tree.tokenTag(before_token.?),
-            after_tree.tokenTag(after_token.?),
-        );
-        try testing.expectEqualStrings(
-            before_tree.tokenSlice(before_token.?),
-            after_tree.tokenSlice(after_token.?),
-        );
+        try testing.expect(after_token != null);
+        try expectSameToken(before_tree, before_token, after_tree, after_token.?);
+        after_token = nextSignificantToken(after_tree, &after_cursor);
     }
+
+    while (after_token) |token| {
+        try testing.expectEqual(ast.TokenTag.semicolon, after_tree.tokenTag(token));
+        after_token = nextSignificantToken(after_tree, &after_cursor);
+    }
+}
+
+fn expectSameToken(
+    before: Ast,
+    before_token: ast.TokenIndex,
+    after: Ast,
+    after_token: ast.TokenIndex,
+) !void {
+    try testing.expectEqual(before.tokenTag(before_token), after.tokenTag(after_token));
+    try testing.expectEqualStrings(before.tokenSlice(before_token), after.tokenSlice(after_token));
 }
 
 fn expectStableRecovery(fixture: Fixture, formatted: []const u8) !void {

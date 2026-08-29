@@ -1,1 +1,1 @@
-test/corpus/** -linguist-detectable
+test/** -linguist-detectable

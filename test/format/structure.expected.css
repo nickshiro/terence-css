@@ -1,0 +1,14 @@
+a, b {
+  color: red;
+  background: rgb(1, 2, 3);
+
+  &:hover {
+    color: blue;
+  }
+
+  @media print {
+    display: none;
+  }
+}
+
+@charset "UTF-8";
