@@ -95,7 +95,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
+        run: npm install --package-lock=false --omit=optional --ignore-scripts --no-audit --no-fund
 
       - name: Build and test native CLI
         run: npm test
@@ -158,7 +158,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
+        run: npm install --package-lock=false --omit=optional --ignore-scripts --no-audit --no-fund
 
       - name: Publish launcher package
         env:
