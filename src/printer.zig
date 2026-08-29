@@ -302,6 +302,19 @@ pub const TokenSerializer = struct {
         self.pending_separator = after;
     }
 
+    /// Emits only the trivia before `until`, consuming the pending separator
+    /// without emitting the significant token at `until`. This lets callers
+    /// change layout state, such as indentation, between trailing comments and
+    /// a structural closing token.
+    pub fn emitTriviaUntil(
+        self: *TokenSerializer,
+        until: TokenIndex,
+    ) Error!void {
+        try self.ensureActive();
+        _ = try self.emitGap(until);
+        self.pending_separator = .none;
+    }
+
     /// Emits trailing comments/trivia and verifies that every remaining source
     /// token was handled. Calling `finish` more than once is harmless.
     pub fn finish(self: *TokenSerializer) Error!void {
@@ -486,12 +499,12 @@ pub const RenderOptions = struct {
 pub const RenderError = TokenSerializer.Error ||
     AutoIndentingWriter.IndentError ||
     error{
-        UnsupportedNode,
         MalformedDeclaration,
+        MalformedRule,
     };
 
-/// Renders component values and declarations. Rule nodes fail explicitly
-/// instead of silently replaying source that the renderer does not understand.
+/// Renders component values, declarations, and stylesheet rules without
+/// synthesizing source terminators that were omitted at EOF.
 pub fn render(
     tree: Ast,
     downstream: *Writer,
@@ -562,10 +575,9 @@ const Renderer = struct {
             .declaration,
             .declaration_important,
             => try self.renderDeclaration(node, after),
-            .at_rule,
-            .qualified_rule,
-            .block,
-            => return error.UnsupportedNode,
+            .at_rule => try self.renderAtRule(node, after),
+            .qualified_rule => try self.renderQualifiedRule(node, after),
+            .block => try self.renderBlock(node, after),
         }
     }
 
@@ -573,6 +585,8 @@ const Renderer = struct {
         const children = self.tree.extraChildren(node);
         if (self.isCommaSeparatedRoot(children)) {
             try self.renderCommaSeparatedRoot(children);
+        } else if (self.isRuleRoot(children)) {
+            try self.renderStructuralList(children, .blank_line, .none);
         } else {
             try self.renderSequence(children, null, .none);
         }
@@ -631,6 +645,165 @@ const Renderer = struct {
         if (closing_token) |token| {
             try self.serializer.emitToken(token, after);
         }
+    }
+
+    fn renderQualifiedRule(
+        self: *Renderer,
+        node: ast.Index,
+        after: Separator,
+    ) RenderError!void {
+        const parts = self.ruleParts(node);
+        const block = parts.block orelse return error.MalformedRule;
+        if (self.nextRenderable(parts.prelude, 0) == null) {
+            return error.MalformedRule;
+        }
+
+        try self.renderPrelude(parts.prelude, .space);
+        try self.renderBlock(block, after);
+    }
+
+    fn renderAtRule(
+        self: *Renderer,
+        node: ast.Index,
+        after: Separator,
+    ) RenderError!void {
+        const parts = self.ruleParts(node);
+        const keyword = self.tree.nodes.items(.main_token)[node];
+        const has_prelude = self.nextRenderable(parts.prelude, 0) != null;
+
+        const keyword_after: Separator = if (has_prelude or parts.block != null)
+            .space
+        else if (parts.semicolon != null)
+            .none
+        else
+            after;
+        try self.serializer.emitToken(keyword, keyword_after);
+
+        if (has_prelude) {
+            const prelude_after: Separator = if (parts.block != null)
+                .space
+            else if (parts.semicolon != null)
+                .none
+            else
+                after;
+            try self.renderPrelude(parts.prelude, prelude_after);
+        }
+
+        if (parts.block) |block| {
+            try self.renderBlock(block, after);
+        } else if (parts.semicolon) |semicolon| {
+            try self.serializer.emitToken(semicolon, after);
+        }
+    }
+
+    fn renderBlock(
+        self: *Renderer,
+        node: ast.Index,
+        after: Separator,
+    ) RenderError!void {
+        const opening = self.tree.nodes.items(.main_token)[node];
+        const closing: ?TokenIndex = if (self.tree.nodeHasClosingToken(
+            node,
+            .r_brace,
+        )) self.tree.lastToken(node).? else null;
+        const content_end = closing orelse self.tree.nodeRange(node).end;
+        const children = self.tree.extraChildren(node);
+        const has_children = self.nextRenderable(children, 0) != null;
+        const has_comments = self.hasComment(opening + 1, content_end);
+
+        if (!has_children and !has_comments) {
+            try self.serializer.emitToken(
+                opening,
+                if (closing != null) .none else after,
+            );
+            try self.serializer.emitTriviaUntil(content_end);
+            if (closing) |token| {
+                try self.serializer.emitToken(token, after);
+            }
+            return;
+        }
+
+        try self.serializer.emitToken(opening, .newline);
+        try self.indented.pushIndent();
+        var indent_active = true;
+        errdefer if (indent_active) self.indented.popIndent() catch {};
+
+        if (has_children) {
+            try self.renderStructuralList(
+                children,
+                .blank_line,
+                if (closing != null) .newline else after,
+            );
+        }
+        try self.serializer.emitTriviaUntil(content_end);
+        try self.indented.popIndent();
+        indent_active = false;
+
+        if (closing) |token| {
+            try self.serializer.emitToken(token, after);
+        }
+    }
+
+    fn renderPrelude(
+        self: *Renderer,
+        children: []const ast.Index,
+        after: Separator,
+    ) RenderError!void {
+        var search_from: usize = 0;
+        while (self.nextRenderable(children, search_from)) |current_index| {
+            const next_index = self.nextRenderable(children, current_index + 1);
+            const gap_end = next_index orelse children.len;
+            const whitespace = self.hasWhitespace(
+                children,
+                current_index + 1,
+                gap_end,
+            );
+            const separator: Separator = if (next_index) |next|
+                if (self.nodeIsToken(children[next], .comma))
+                    .none
+                else if (self.nodeIsToken(children[current_index], .comma) or whitespace)
+                    .space
+                else
+                    .none
+            else
+                after;
+
+            try self.renderNode(children[current_index], separator);
+            search_from = current_index + 1;
+        }
+    }
+
+    fn renderStructuralList(
+        self: *Renderer,
+        children: []const ast.Index,
+        between: Separator,
+        after: Separator,
+    ) RenderError!void {
+        var search_from: usize = 0;
+        while (self.nextRenderable(children, search_from)) |current_index| {
+            const next_index = self.nextRenderable(children, current_index + 1);
+            try self.renderNode(
+                children[current_index],
+                if (next_index != null) between else after,
+            );
+            search_from = current_index + 1;
+        }
+    }
+
+    fn ruleParts(self: Renderer, node: ast.Index) RuleParts {
+        const children = self.tree.extraChildren(node);
+        const tags = self.tree.nodes.items(.tag);
+        const has_block = children.len != 0 and
+            tags[children[children.len - 1]] == .block;
+
+        return .{
+            .prelude = if (has_block) children[0 .. children.len - 1] else children,
+            .block = if (has_block) children[children.len - 1] else null,
+            .semicolon = if (self.tree.nodeHasClosingToken(node, .semicolon))
+                self.tree.lastToken(node).?
+            else
+                null,
+        };
     }
 
     fn renderDeclarationList(
@@ -824,6 +997,15 @@ const Renderer = struct {
         return true;
     }
 
+    fn isRuleRoot(self: Renderer, children: []const ast.Index) bool {
+        const tags = self.tree.nodes.items(.tag);
+        for (children) |child| switch (tags[child]) {
+            .at_rule, .qualified_rule => return true,
+            else => {},
+        };
+        return false;
+    }
+
     fn nextRenderable(
         self: Renderer,
         children: []const ast.Index,
@@ -864,6 +1046,18 @@ const Renderer = struct {
         return false;
     }
 
+    fn hasComment(
+        self: Renderer,
+        start: TokenIndex,
+        end: TokenIndex,
+    ) bool {
+        for (start..end) |raw_index| {
+            const token: TokenIndex = @intCast(raw_index);
+            if (self.tree.tokenTag(token) == .comment) return true;
+        }
+        return false;
+    }
+
     fn nodeIsToken(
         self: Renderer,
         node: ast.Index,
@@ -884,6 +1078,12 @@ const DeclarationParts = struct {
     important_bang: ?TokenIndex = null,
     important_ident: ?TokenIndex = null,
     semicolon: ?TokenIndex = null,
+};
+
+const RuleParts = struct {
+    prelude: []const ast.Index,
+    block: ?ast.Index,
+    semicolon: ?TokenIndex,
 };
 
 const PreviousToken = struct {

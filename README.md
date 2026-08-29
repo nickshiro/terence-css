@@ -4,7 +4,7 @@ Lightweight, dependency-free CSS formatter written in Zig.
 
 ## Roadmap
 
-1. Complete the AST renderer and define stable formatting rules.
+1. Define stable formatting rules and harden comment placement and idempotence.
 2. Create command-line interface for files and standard input.
 3. Add formatting options.
 4. Ensure idempotent output and reliable recovery for malformed CSS.
@@ -55,8 +55,9 @@ Lightweight, dependency-free CSS formatter written in Zig.
 | Printer/Formatter | — | in progress |
 | Token serialization | §9 | implemented |
 | Printer entry point | — | implemented |
-| AST renderer | — | in progress |
+| AST renderer | — | implemented |
 | Declaration rendering | §5.4.5, §5.4.7 | implemented |
+| Rule and block rendering | §5.5.2–§5.5.5 | implemented |
 | Separator selection | — | in progress |
 | Synthetic token rendering | — | not started |
 | Comment placement | — | in progress |

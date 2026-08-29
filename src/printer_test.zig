@@ -442,13 +442,237 @@ test "renderer: reports malformed declaration structure" {
     );
 }
 
-test "renderer: still rejects rule nodes until their phase" {
-    var stylesheet = try Ast.parseStylesheet(testing.allocator, "a { color: red; }");
-    defer stylesheet.deinit(testing.allocator);
-    var stylesheet_output: std.Io.Writer.Discarding = .init(&.{});
+test "renderer: formats qualified rules and declaration blocks" {
+    const source = "a:hover,  .b >\tc{color:red;width:1px;}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "a:hover, .b > c {\n  color: red;\n  width: 1px;\n}",
+        actual,
+    );
+    try expectSameSignificantTags(source, actual);
+}
+
+test "renderer: supports terminated and EOF-terminated at-rules" {
+    const cases = [_]struct {
+        source: []const u8,
+        expected: []const u8,
+    }{
+        .{
+            .source = "@import   url(theme.css) ;",
+            .expected = "@import url(theme.css);",
+        },
+        .{ .source = "@charset \"UTF-8\"", .expected = "@charset \"UTF-8\"" },
+        .{ .source = "@layer;", .expected = "@layer;" },
+        .{
+            .source = "@import/**/\"x.css\"/**/;",
+            .expected = "@import /**/ \"x.css\"/**/;",
+        },
+    };
+
+    for (cases) |case| {
+        var tree = try Ast.parseStylesheet(testing.allocator, case.source);
+        defer tree.deinit(testing.allocator);
+        const actual = try renderTree(testing.allocator, tree);
+        defer testing.allocator.free(actual);
+        try testing.expectEqualStrings(case.expected, actual);
+        try expectSameSignificantTags(case.source, actual);
+    }
+}
+
+test "renderer: formats block at-rules recursively" {
+    const source = "@media  screen and (width >= 1px){a{color:red}}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "@media screen and (width >= 1px) {\n" ++
+            "  a {\n" ++
+            "    color: red\n" ++
+            "  }\n" ++
+            "}",
+        actual,
+    );
+    try expectSameSignificantTags(source, actual);
+}
+
+test "renderer: separates top-level rules with blank lines" {
+    const source = "@import \"theme.css\";a{}@media print{b{display:none;}}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "@import \"theme.css\";\n\n" ++
+            "a {}\n\n" ++
+            "@media print {\n" ++
+            "  b {\n" ++
+            "    display: none;\n" ++
+            "  }\n" ++
+            "}",
+        actual,
+    );
+}
+
+test "renderer: separates declarations and nested rules" {
+    const source = ".card{color:red;&:hover{color:blue;}width:1px;}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        ".card {\n" ++
+            "  color: red;\n\n" ++
+            "  &:hover {\n" ++
+            "    color: blue;\n" ++
+            "  }\n\n" ++
+            "  width: 1px;\n" ++
+            "}",
+        actual,
+    );
+}
+
+test "renderer: compacts whitespace-only blocks and expands comment-only blocks" {
+    const source = "a { \n } b{/* only */}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "a {}\n\nb {\n  /* only */\n}",
+        actual,
+    );
+}
+
+test "renderer: indents leading and trailing block comments" {
+    const source = "a{/* lead */color:red;/* tail */}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "a {\n" ++
+            "  /* lead */\n" ++
+            "  color: red;\n" ++
+            "  /* tail */\n" ++
+            "}",
+        actual,
+    );
+}
+
+test "renderer: does not synthesize omitted rule terminators" {
+    const cases = [_]struct {
+        source: []const u8,
+        expected: []const u8,
+    }{
+        .{ .source = "a{color:red", .expected = "a {\n  color: red" },
+        .{
+            .source = "@media screen{a{color:red",
+            .expected = "@media screen {\n  a {\n    color: red",
+        },
+        .{ .source = "@import \"x.css\"", .expected = "@import \"x.css\"" },
+    };
+
+    for (cases) |case| {
+        var tree = try Ast.parseStylesheet(testing.allocator, case.source);
+        defer tree.deinit(testing.allocator);
+        const actual = try renderTree(testing.allocator, tree);
+        defer testing.allocator.free(actual);
+        try testing.expectEqualStrings(case.expected, actual);
+    }
+}
+
+test "renderer: retains invalid nodes around valid stylesheet rules" {
+    const source = "--theme:red{} /**/ @import \"a.css\"; a{} trailing";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "--theme:red{}\n\n/**/\n\n" ++
+            "@import \"a.css\";\n\n" ++
+            "a {}\n\n" ++
+            "trailing",
+        actual,
+    );
+}
+
+test "renderer: formats keyframe rule blocks without at-rule special cases" {
+    const source = "@keyframes fade{from{opacity:0}50%,to{opacity:1}}";
+    var tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const actual = try renderTree(testing.allocator, tree);
+    defer testing.allocator.free(actual);
+
+    try testing.expectEqualStrings(
+        "@keyframes fade {\n" ++
+            "  from {\n" ++
+            "    opacity: 0\n" ++
+            "  }\n\n" ++
+            "  50%, to {\n" ++
+            "    opacity: 1\n" ++
+            "  }\n" ++
+            "}",
+        actual,
+    );
+}
+
+test "renderer: applies configured indentation throughout rule blocks" {
+    var tree = try Ast.parseStylesheet(
+        testing.allocator,
+        "@media screen{a{color:red;}}",
+    );
+    defer tree.deinit(testing.allocator);
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    try printer.render(tree, &output.writer, .{ .indent_width = 4 });
+
+    try testing.expectEqualStrings(
+        "@media screen {\n" ++
+            "    a {\n" ++
+            "        color: red;\n" ++
+            "    }\n" ++
+            "}",
+        output.written(),
+    );
+}
+
+test "renderer: stylesheet formatting is idempotent" {
+    const source = "@import \"x.css\";.card{color:red;&:hover{color:blue}}";
+    var first_tree = try Ast.parseStylesheet(testing.allocator, source);
+    defer first_tree.deinit(testing.allocator);
+    const once = try renderTree(testing.allocator, first_tree);
+    defer testing.allocator.free(once);
+
+    var second_tree = try Ast.parseStylesheet(testing.allocator, once);
+    defer second_tree.deinit(testing.allocator);
+    const twice = try renderTree(testing.allocator, second_tree);
+    defer testing.allocator.free(twice);
+
+    try testing.expectEqualStrings(once, twice);
+}
+
+test "renderer: reports a qualified rule without a structural block" {
+    var tree = try Ast.parseStylesheet(testing.allocator, "a{}");
+    defer tree.deinit(testing.allocator);
+    const rule = tree.extraChildren(tree.root)[0];
+    const block = tree.extraChildren(rule)[1];
+    tree.nodes.items(.tag)[block] = .simple_block_brace;
+    var output: std.Io.Writer.Discarding = .init(&.{});
+
     try testing.expectError(
-        error.UnsupportedNode,
-        printer.render(stylesheet, &stylesheet_output.writer, .{}),
+        error.MalformedRule,
+        printer.render(tree, &output.writer, .{}),
     );
 }
 
@@ -629,6 +853,46 @@ test "token serializer: separator modes normalize trivia and retain comments" {
         try serializer.finish();
         try testing.expectEqualStrings(case.expected, output.written());
     }
+}
+
+test "token serializer: emits trivia separately from its following token" {
+    const source = "a /*one*/ b";
+    var tree = try Ast.parseComponentValues(testing.allocator, source);
+    defer tree.deinit(testing.allocator);
+    const tokens = try significantTokens(tree, testing.allocator);
+    defer testing.allocator.free(tokens);
+
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var serializer: TokenSerializer = .init(tree, &output.writer);
+
+    try serializer.emitToken(tokens[0], .newline);
+    try serializer.emitTriviaUntil(tokens[1]);
+    try serializer.emitToken(tokens[1], .none);
+    try serializer.finish();
+
+    try testing.expectEqualStrings("a\n/*one*/\nb", output.written());
+}
+
+test "token serializer: trivia emission validates ordering and source gaps" {
+    var tree = try Ast.parseComponentValues(testing.allocator, "a x b");
+    defer tree.deinit(testing.allocator);
+    const tokens = try significantTokens(tree, testing.allocator);
+    defer testing.allocator.free(tokens);
+
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var serializer: TokenSerializer = .init(tree, &output.writer);
+
+    try serializer.emitToken(tokens[0], .none);
+    try testing.expectError(
+        error.UnhandledToken,
+        serializer.emitTriviaUntil(tokens[2]),
+    );
+    try testing.expectError(
+        error.OutOfOrderToken,
+        serializer.emitTriviaUntil(tokens[0]),
+    );
 }
 
 test "token serializer: leading trailing and comment-only trivia are retained" {
