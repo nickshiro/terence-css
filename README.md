@@ -1,6 +1,7 @@
 # Terence CSS
 
-Lightweight, dependency-free CSS formatter written in Zig.
+Terence CSS is a portable, dependency-free CSS parsing and formatting engine
+that includes an embeddable Zig library, a native CLI formatter, and a WASM library.
 
 ## Usage
 
@@ -10,14 +11,74 @@ terence-css --write FILE...  # format in place
 terence-css --check FILE...  # check formatting
 ```
 
+The default mode accepts CSS from a file or standard input and writes formatted
+CSS to standard output. `--write` and `--check` reject files with parser
+diagnostics instead of rewriting malformed input.
+
+## Zig library
+
+The package exports the `terence_css` module. Once the dependency is declared
+in `build.zig.zon`, add it to your executable or library:
+
+```zig
+const dependency = b.dependency("terence_css", .{
+    .target = target,
+    .optimize = optimize,
+});
+root_module.addImport("terence_css", dependency.module("terence_css"));
+```
+
+Parse CSS when you need its syntax tree and diagnostics:
+
+```zig
+const terence_css = @import("terence_css");
+
+var tree = try terence_css.parseStylesheet(allocator, source);
+defer tree.deinit(allocator);
+
+for (tree.errors) |diagnostic| {
+    // Inspect diagnostic.tag and diagnostic.token.
+}
+```
+
+The AST owns its allocated data but borrows `source`; keep the source alive
+until `tree.deinit` returns. For direct formatting, use the convenience API:
+
+```zig
+const formatted = try terence_css.formatStylesheetAlloc(
+    allocator,
+    source,
+    .{
+        .indent_width = 2,
+        .final_newline = true,
+        .error_mode = .recover,
+    },
+);
+defer allocator.free(formatted);
+```
+
+Use `.strict` to reject any stylesheet that produced parser diagnostics. The
+lower-level `render` function accepts an existing AST and does not force a final
+newline.
+
+## Architecture
+
+```text
+Tokenizer -> Parser -> AST -> Printer
+                 |             |
+                 +-- Zig API ---+
+                       |
+                       +-- native CLI
+                       +-- WebAssembly/JavaScript (planned)
+```
+
 ## Roadmap
 
 1. Define stable formatting rules and harden comment placement and idempotence.
-2. Add formatting options.
-3. Ensure idempotent output and reliable recovery for malformed CSS.
-4. Publish native binaries and an npm package for easy installation.
-5. Provide WASM build and lib for browser-based editors and playgrounds.
-6. Add other CSS-family languages?
+2. Ensure idempotent output and reliable recovery for malformed CSS.
+3. Publish native binaries and an npm CLI package for easy installation.
+4. Provide a WASM npm package for browser-based editors and playgrounds.
+5. Add other CSS-family languages?
 
 ## The project follows three principles:
 
@@ -71,3 +132,6 @@ terence-css --check FILE...  # check formatting
 | Malformed CSS recovery rendering | — | implemented |
 | Auto-indenting writer | — | implemented |
 | Printer idempotence verification | — | in progress |
+| Public Zig library API | — | implemented |
+| Native npm CLI package | — | not started |
+| WebAssembly npm package | — | not started |

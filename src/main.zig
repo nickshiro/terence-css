@@ -2,8 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-const Ast = @import("ast.zig").Ast;
-const printer = @import("printer.zig");
+const terence_css = @import("terence_css");
 
 const Mode = enum { stdout, write, check };
 
@@ -94,7 +93,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     defer init.gpa.free(source);
 
-    const formatted = try formatCss(init.gpa, source, false);
+    const formatted = try terence_css.formatStylesheetAlloc(init.gpa, source, .{});
     defer init.gpa.free(formatted);
 
     var stdout_buf: [4096]u8 = undefined;
@@ -114,8 +113,11 @@ fn formatFile(io: Io, allocator: Allocator, path: []const u8) !void {
 
     const source = try cwd.readFileAlloc(io, path, allocator, .unlimited);
     defer allocator.free(source);
-    const formatted = try formatCss(allocator, source, true);
+    const formatted = try terence_css.formatStylesheetAlloc(allocator, source, .{
+        .error_mode = .strict,
+    });
     defer allocator.free(formatted);
+
     if (std.mem.eql(u8, source, formatted)) {
         return;
     }
@@ -138,31 +140,12 @@ fn formatFile(io: Io, allocator: Allocator, path: []const u8) !void {
 fn fileIsFormatted(io: Io, allocator: Allocator, path: []const u8) !bool {
     const source = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
     defer allocator.free(source);
-    const formatted = try formatCss(allocator, source, true);
+    const formatted = try terence_css.formatStylesheetAlloc(allocator, source, .{
+        .error_mode = .strict,
+    });
     defer allocator.free(formatted);
+
     return std.mem.eql(u8, source, formatted);
-}
-
-fn formatCss(
-    allocator: Allocator,
-    source: []const u8,
-    reject_parse_errors: bool,
-) ![]u8 {
-    var tree = try Ast.parseStylesheet(allocator, source);
-    defer tree.deinit(allocator);
-
-    if (reject_parse_errors and tree.errors.len != 0) {
-        return error.InvalidCss;
-    }
-
-    var output: Io.Writer.Allocating = .init(allocator);
-    errdefer output.deinit();
-    try printer.render(tree, &output.writer, .{});
-    if (output.written().len == 0 or output.written()[output.written().len - 1] != '\n') {
-        try output.writer.writeByte('\n');
-    }
-
-    return output.toOwnedSlice();
 }
 
 fn usage(io: Io) !u8 {
