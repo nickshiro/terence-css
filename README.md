@@ -61,6 +61,34 @@ Use `.strict` to reject any stylesheet that produced parser diagnostics. The
 lower-level `render` function accepts an existing AST and does not force a final
 newline.
 
+## WebAssembly
+
+Build the freestanding WASM library without host imports:
+
+```sh
+zig build wasm
+zig build wasm-test
+```
+
+Once published, the npm package exposes the same formatter in browsers, web
+workers, online IDEs, and Node.js:
+
+```sh
+npm install @terence-css/wasm
+```
+
+```js
+import { createFormatter } from "@terence-css/wasm";
+
+const formatter = await createFormatter();
+const css = formatter.format("a{color:red}");
+formatter.dispose();
+```
+
+`createFormatter` may also receive a `Response`, `WebAssembly.Module`,
+`ArrayBuffer`, or typed array. Formatting supports `indentWidth`,
+`finalNewline`, and `errorMode` options.
+
 ## Architecture
 
 ```text
@@ -69,7 +97,7 @@ Tokenizer -> Parser -> AST -> Printer
                  +-- Zig API ---+
                        |
                        +-- native CLI
-                       +-- WebAssembly/JavaScript (planned)
+                       +-- WebAssembly/JavaScript
 ```
 
 The canonical layout, comment, recovery, and token-preservation rules are
@@ -78,7 +106,7 @@ defined in [FORMATTING.md](FORMATTING.md).
 ## Roadmap
 
 1. Publish native binaries and an npm CLI package for easy installation.
-2. Provide a WASM npm package for browser-based editors and playgrounds.
+2. Publish the WASM npm package.
 3. Add other CSS-family languages?
 
 ## The project follows three principles:
@@ -136,4 +164,5 @@ defined in [FORMATTING.md](FORMATTING.md).
 | Golden formatting specification | — | implemented |
 | Public Zig library API | — | implemented |
 | Native npm CLI package | — | not started |
-| WebAssembly npm package | — | not started |
+| WebAssembly ABI and build | — | implemented |
+| WebAssembly npm package | — | implemented |

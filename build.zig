@@ -60,4 +60,47 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_public_api_tests.step);
+
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const wasm_module = b.createModule(.{
+        .root_source_file = b.path("src/wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .single_threaded = true,
+        .strip = true,
+    });
+    wasm_module.addImport("terence_css", terence_css);
+    wasm_module.export_symbol_names = &.{
+        "terence_abi_version",
+        "terence_alloc",
+        "terence_free",
+        "terence_format",
+        "terence_result_ptr",
+        "terence_result_len",
+        "terence_result_error",
+        "terence_result_free",
+    };
+
+    const wasm = b.addExecutable(.{
+        .name = "terence_css",
+        .root_module = wasm_module,
+    });
+    wasm.entry = .disabled;
+    wasm.export_memory = true;
+
+    const install_wasm = b.addInstallFile(
+        wasm.getEmittedBin(),
+        "terence_css.wasm",
+    );
+    const wasm_step = b.step("wasm", "Build the WebAssembly library");
+    wasm_step.dependOn(&install_wasm.step);
+
+    const run_wasm_tests = b.addSystemCommand(&.{"node"});
+    run_wasm_tests.addFileArg(b.path("npm/wasm/test.mjs"));
+    run_wasm_tests.addFileArg(wasm.getEmittedBin());
+    const wasm_test_step = b.step("wasm-test", "Test the WebAssembly npm package");
+    wasm_test_step.dependOn(&run_wasm_tests.step);
 }

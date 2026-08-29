@@ -1,0 +1,45 @@
+{
+  "name": "@terence-css/wasm",
+  "version": "0.0.0",
+  "description": "WebAssembly CSS parser and formatter powered by Terence CSS",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": "./index.js",
+      "node": "./index.node.js",
+      "default": "./index.js"
+    },
+    "./terence_css.wasm": "./terence_css.wasm"
+  },
+  "files": [
+    "index.d.ts",
+    "index.js",
+    "index.node.js",
+    "shared.js",
+    "terence_css.wasm"
+  ],
+  "scripts": {
+    "build": "zig build --build-file ../../build.zig wasm -p .",
+    "format": "prettier --write \"**/*.{js,mjs,json,ts}\"",
+    "format:check": "prettier --check \"**/*.{js,mjs,json,ts}\"",
+    "prepack": "npm run format:check && npm run build",
+    "test": "npm run format:check && npm run build && node test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickshiro/terence-css.git",
+    "directory": "npm/wasm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}
