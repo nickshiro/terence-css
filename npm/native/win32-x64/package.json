@@ -1,0 +1,24 @@
+{
+  "name": "@terence-css/cli-win32-x64",
+  "version": "0.0.0",
+  "description": "Terence CSS native binary for Windows x64",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/terence-css.exe"
+  ],
+  "preferUnplugged": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickshiro/terence-css.git",
+    "directory": "npm/native/win32-x64"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

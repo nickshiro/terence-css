@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const strip = b.option(bool, "strip", "Strip symbols from installed binaries") orelse false;
 
     const terence_css = b.addModule("terence_css", .{
         .root_source_file = b.path("src/terence_css.zig"),
@@ -12,6 +13,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip,
     });
     exe_module.addImport("terence_css", terence_css);
 

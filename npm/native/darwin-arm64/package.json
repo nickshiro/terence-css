@@ -1,0 +1,24 @@
+{
+  "name": "@terence-css/cli-darwin-arm64",
+  "version": "0.0.0",
+  "description": "Terence CSS native binary for macOS arm64",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/terence-css"
+  ],
+  "preferUnplugged": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickshiro/terence-css.git",
+    "directory": "npm/native/darwin-arm64"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

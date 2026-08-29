@@ -5,15 +5,22 @@ that includes an embeddable Zig library, a native CLI formatter, and a WASM libr
 
 ## Usage
 
+Install the formatter as a development dependency:
+
 ```sh
-terence-css [FILE|-]         # format to stdout
-terence-css --write FILE...  # format in place
-terence-css --check FILE...  # check formatting
+npm install --save-dev terence-css
+```
+
+```sh
+npx terence-css [FILE|-]         # format to stdout
+npx terence-css --write FILE...  # format in place
+npx terence-css --check FILE...  # check formatting
 ```
 
 The default mode accepts CSS from a file or standard input and writes formatted
 CSS to standard output. `--write` and `--check` reject files with parser
-diagnostics instead of rewriting malformed input.
+diagnostics instead of rewriting malformed input. The npm package selects a
+native binary for Linux, macOS, or Windows and does not compile during install.
 
 ## Zig library
 
@@ -105,9 +112,8 @@ defined in [FORMATTING.md](FORMATTING.md).
 
 ## Roadmap
 
-1. Publish native binaries and an npm CLI package for easy installation.
-2. Publish the WASM npm package.
-3. Add other CSS-family languages?
+1. Publish native binaries and the npm packages.
+2. Add other CSS-family languages?
 
 ## The project follows three principles:
 
@@ -163,6 +169,6 @@ defined in [FORMATTING.md](FORMATTING.md).
 | Printer idempotence verification | — | implemented |
 | Golden formatting specification | — | implemented |
 | Public Zig library API | — | implemented |
-| Native npm CLI package | — | not started |
+| npm CLI package | — | implemented |
 | WebAssembly ABI and build | — | implemented |
 | WebAssembly npm package | — | implemented |

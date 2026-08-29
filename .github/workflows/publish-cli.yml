@@ -1,0 +1,166 @@
+name: Publish CLI packages
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: Publish ${{ matrix.package }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+            package: "@terence-css/cli-linux-x64"
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+            package: "@terence-css/cli-linux-arm64"
+          - runner: macos-15-intel
+            target: darwin-x64
+            package: "@terence-css/cli-darwin-x64"
+          - runner: macos-15
+            target: darwin-arm64
+            package: "@terence-css/cli-darwin-arm64"
+          - runner: windows-2025
+            target: win32-x64
+            package: "@terence-css/cli-win32-x64"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/${{ matrix.package }}
+    defaults:
+      run:
+        working-directory: npm/cli
+
+    steps:
+      - name: Check out release
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Set up npm
+        run: npm install --global npm@12.0.1
+
+      - name: Validate release version
+        id: release
+        working-directory: npm/native/${{ matrix.target }}
+        env:
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "v$package_version" || {
+            echo "::error::Release tag '$RELEASE_TAG' must match package version 'v$package_version'."
+            exit 1
+          }
+
+          if [[ "$package_version" == *-* ]]; then
+            test "$IS_PRERELEASE" = true || {
+              echo "::error::A prerelease package version requires a GitHub prerelease."
+              exit 1
+            }
+            echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            test "$IS_PRERELEASE" != true || {
+              echo "::error::A stable package version cannot be a GitHub prerelease."
+              exit 1
+            }
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
+
+      - name: Build and test native CLI
+        run: npm test
+
+      - name: Publish native package
+        working-directory: npm/native/${{ matrix.target }}
+        env:
+          NPM_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+        run: npm publish --access public --tag "$NPM_DIST_TAG"
+
+  launcher:
+    name: Publish terence-css launcher
+    needs: native
+    if: ${{ needs.native.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/terence-css
+    defaults:
+      run:
+        working-directory: npm/cli
+
+    steps:
+      - name: Check out release
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Set up npm
+        run: npm install --global npm@12.0.1
+
+      - name: Validate release version
+        id: release
+        env:
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "v$package_version" || {
+            echo "::error::Release tag '$RELEASE_TAG' must match package version 'v$package_version'."
+            exit 1
+          }
+
+          if [[ "$package_version" == *-* ]]; then
+            test "$IS_PRERELEASE" = true || exit 1
+            echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            test "$IS_PRERELEASE" != true || exit 1
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
+
+      - name: Publish launcher package
+        env:
+          NPM_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+        run: npm publish --access public --tag "$NPM_DIST_TAG"
