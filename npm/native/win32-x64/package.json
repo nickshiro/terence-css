@@ -1,6 +1,6 @@
 {
   "name": "@terence-css/cli-win32-x64",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Terence CSS native binary for Windows x64",
   "license": "MIT",
   "os": [

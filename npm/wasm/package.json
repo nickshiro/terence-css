@@ -1,6 +1,6 @@
 {
   "name": "@terence-css/wasm",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "WebAssembly CSS parser and formatter powered by Terence CSS",
   "type": "module",
   "license": "MIT",
