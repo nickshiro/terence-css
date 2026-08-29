@@ -1,0 +1,5 @@
+--theme: red {}
+a{color red;broken value(fn(a;b),[c;d]);width:1px;}
+} .recovered{height:2px;}
+@media screen{.implicit{color:blue}
+trailing

@@ -1,0 +1,5 @@
+:root,.theme-dark{--surface:#fff;--text:#111;color:var(--text);background:var(--surface)}
+main > article:is(.post,.note):not([hidden]){display:grid;grid-template-columns:minmax(0,1fr) 18rem;gap:clamp(1rem,3vw,2rem)}
+.card[data-state="open"]::before{content:"";position:absolute;inset:0;border:1px solid currentColor}
+nav ul > li + li a:hover,nav ul > li + li a:focus-visible{text-decoration-thickness:from-font}
+@scope (.component) to (.stop){:scope > .title{font-weight:700}.item:nth-child(2n + 1){background:color-mix(in srgb,currentColor 8%,transparent)}}

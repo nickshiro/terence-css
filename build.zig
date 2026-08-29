@@ -26,13 +26,16 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/test.zig"),
+        .target = target,
+        .optimize = optimize,
     });
+    test_module.addImport("corpus", b.createModule(.{
+        .root_source_file = b.path("test/corpus.zig"),
+    }));
+
+    const tests = b.addTest(.{ .root_module = test_module });
 
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");

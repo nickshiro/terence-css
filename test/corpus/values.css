@@ -1,0 +1,3 @@
+.values{--tokens:{primary:red;secondary:blue};--fallback:fn(a,b,[c,d],{e,f});width:calc(100% - min(2rem,5vw));font-size:clamp(1rem,1rem + 2vw,3rem);background:linear-gradient(90deg,#0000,color(display-p3 1 0 0 / .8)),url(image.png);transform:translate3d(0,calc(var(--offset,0) * 1px),0);grid-template:"head head" auto "side main" 1fr / minmax(12rem,25%) 1fr;animation:pulse 250ms cubic-bezier(.2,0,.8,1) infinite}
+@property --angle{syntax:"<angle>";inherits:false;initial-value:0deg}
+.escaped{\63 olor:red;content:"comma, brace } and semicolon ;";counter-reset:item 1}

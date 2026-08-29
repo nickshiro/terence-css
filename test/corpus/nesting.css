@@ -1,0 +1,3 @@
+.card{color:canvastext;background:canvas;& > .title{font:600 1.25rem/1.2 system-ui}&:hover,&:focus-within{border-color:accentcolor}.theme-dark &{box-shadow:0 1rem 3rem #0008}@media (width >= 48rem){display:grid;grid-template-columns:subgrid}@supports (container-type:inline-size){container-type:inline-size}}
+.list{margin:0;padding:0;> li{display:flex;+ li{margin-block-start:.5rem}}}
+@layer components{.button{--button-bg:blue;background:var(--button-bg);&[aria-pressed="true"]{--button-bg:navy}}}

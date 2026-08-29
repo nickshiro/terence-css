@@ -1,0 +1,7 @@
+@charset "UTF-8";
+@import url("theme.css") layer(theme) screen and (width >= 40rem);
+@layer reset,base,components;
+@font-face{font-family:"Corpus Sans";src:url(corpus.woff2) format("woff2");font-display:swap;unicode-range:U+0000-00FF,U+4??;}
+@supports (display:grid) and (selector(:has(*))){.layout{display:grid}.layout:has(> aside){grid-template-columns:1fr 20rem}}
+@media print{a[href]::after{content:" (" attr(href) ")"}}
+@keyframes pulse{from{opacity:.5}50%{opacity:1}to{opacity:.5}}

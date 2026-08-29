@@ -1,0 +1,5 @@
+/* license */
+/**/@media/**/ screen/**/{/**/.shell/**/,/**/.panel/**/{/**/color/**/:/**/red/**/;/**/width:calc(100%/**/-/**/1rem)/**/;/**/}/**/}
+.button/* selector */:hover{/* before */color:blue/* value */!/**/IMPORTANT/**/;/* after */}
+@supports/* keyword */(display:grid)/* prelude */{.grid{display:grid/* tail */}}
+/* eof */
