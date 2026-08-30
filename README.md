@@ -17,6 +17,9 @@ npx terence-css --write FILE...  # format in place
 npx terence-css --check FILE...  # check formatting
 ```
 
+When a directory is passed to `--write` or `--check`, the CLI recursively
+processes all files ending in `.css` and skips other files.
+
 The default mode accepts CSS from a file or standard input and writes formatted
 CSS to standard output. `--write` and `--check` reject files with parser
 diagnostics instead of rewriting malformed input. The npm package selects a

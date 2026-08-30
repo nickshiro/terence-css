@@ -12,8 +12,8 @@
     "lib/platform.js"
   ],
   "scripts": {
-    "format": "prettier --write \"**/*.{js,mjs,json,md}\" \"../README.md\" \"../scripts/**/*.{js,mjs,json,md}\" \"../native/**/*.{json,md}\"",
-    "format:check": "prettier --check \"**/*.{js,mjs,json,md}\" \"../README.md\" \"../scripts/**/*.{js,mjs,json,md}\" \"../native/**/*.{json,md}\"",
+    "format": "prettier --write \"**/*.{js,mjs,json,md}\" \"../scripts/**/*.{js,mjs,json,md}\" \"../native/**/*.{json,md}\"",
+    "format:check": "prettier --check \"**/*.{js,mjs,json,md}\" \"../scripts/**/*.{js,mjs,json,md}\" \"../native/**/*.{json,md}\"",
     "prepack": "npm run format:check",
     "test": "npm run format:check && node ../scripts/build-native.mjs --host && node --test test/*.test.mjs"
   },

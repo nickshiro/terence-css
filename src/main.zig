@@ -50,7 +50,15 @@ pub fn main(init: std.process.Init) !u8 {
                 return usage(init.io);
             }
 
-            formatFile(init.io, init.gpa, path) catch |err| {
+            const stat = Io.Dir.cwd().statFile(init.io, path, .{ .follow_symlinks = false }) catch |err| {
+                try reportError(init.io, path, err);
+                return 1;
+            };
+            const result = if (stat.kind == .directory)
+                formatDirectory(init.io, init.gpa, path)
+            else
+                formatFile(init.io, init.gpa, path);
+            result catch |err| {
                 try reportError(init.io, path, err);
                 return 1;
             };
@@ -67,13 +75,22 @@ pub fn main(init: std.process.Init) !u8 {
         var clean = true;
         for (paths) |path| {
             if (std.mem.eql(u8, path, "-")) return usage(init.io);
-            const formatted = fileIsFormatted(init.io, init.gpa, path) catch |err| {
+            const stat = Io.Dir.cwd().statFile(init.io, path, .{ .follow_symlinks = false }) catch |err| {
                 try reportError(init.io, path, err);
                 return 1;
             };
-            if (!formatted) {
-                try stdout.interface.print("{s}\n", .{path});
-                clean = false;
+            if (stat.kind == .directory) {
+                clean = try checkDirectory(init.io, init.gpa, path, &stdout.interface) and clean;
+            } else {
+                const formatted = fileIsFormatted(init.io, init.gpa, path) catch |err| {
+                    try reportError(init.io, path, err);
+                    return 1;
+                };
+
+                if (!formatted) {
+                    try stdout.interface.print("{s}\n", .{path});
+                    clean = false;
+                }
             }
         }
         try stdout.interface.flush();
@@ -82,6 +99,14 @@ pub fn main(init: std.process.Init) !u8 {
 
     if (paths.len > 1) {
         return usage(init.io);
+    }
+
+    if (paths.len == 1 and !std.mem.eql(u8, paths[0], "-")) {
+        const stat = Io.Dir.cwd().statFile(init.io, paths[0], .{ .follow_symlinks = false }) catch |err| {
+            try reportError(init.io, paths[0], err);
+            return 1;
+        };
+        if (stat.kind == .directory) return usage(init.io);
     }
 
     const source = if (paths.len == 1 and !std.mem.eql(u8, paths[0], "-"))
@@ -105,13 +130,16 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn formatFile(io: Io, allocator: Allocator, path: []const u8) !void {
-    const cwd = Io.Dir.cwd();
-    const stat = try cwd.statFile(io, path, .{ .follow_symlinks = false });
+    return formatFileAt(io, allocator, Io.Dir.cwd(), path);
+}
+
+fn formatFileAt(io: Io, allocator: Allocator, dir: Io.Dir, path: []const u8) !void {
+    const stat = try dir.statFile(io, path, .{ .follow_symlinks = false });
     if (stat.kind == .sym_link) {
         return error.SymbolicLink;
     }
 
-    const source = try cwd.readFileAlloc(io, path, allocator, .unlimited);
+    const source = try dir.readFileAlloc(io, path, allocator, .unlimited);
     defer allocator.free(source);
     const formatted = try terence_css.formatStylesheetAlloc(allocator, source, .{
         .error_mode = .strict,
@@ -122,7 +150,7 @@ fn formatFile(io: Io, allocator: Allocator, path: []const u8) !void {
         return;
     }
 
-    var atomic = try cwd.createFileAtomic(io, path, .{
+    var atomic = try dir.createFileAtomic(io, path, .{
         .permissions = stat.permissions,
         .replace = true,
     });
@@ -137,8 +165,56 @@ fn formatFile(io: Io, allocator: Allocator, path: []const u8) !void {
     try atomic.replace(io);
 }
 
+fn formatDirectory(io: Io, allocator: Allocator, path: []const u8) !void {
+    var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".css")) continue;
+        try formatFileAt(io, allocator, entry.dir, entry.basename);
+    }
+}
+
 fn fileIsFormatted(io: Io, allocator: Allocator, path: []const u8) !bool {
     const source = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+    defer allocator.free(source);
+    const formatted = try terence_css.formatStylesheetAlloc(allocator, source, .{
+        .error_mode = .strict,
+    });
+    defer allocator.free(formatted);
+
+    return std.mem.eql(u8, source, formatted);
+}
+
+fn checkDirectory(
+    io: Io,
+    allocator: Allocator,
+    path: []const u8,
+    output: *Io.Writer,
+) !bool {
+    var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    var clean = true;
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".css")) continue;
+        if (!try fileIsFormattedAt(io, allocator, entry.dir, entry.basename)) {
+            try output.print("{s}{c}{s}\n", .{ path, std.fs.path.sep, entry.path });
+            clean = false;
+        }
+    }
+
+    return clean;
+}
+
+fn fileIsFormattedAt(io: Io, allocator: Allocator, dir: Io.Dir, path: []const u8) !bool {
+    const source = try dir.readFileAlloc(io, path, allocator, .unlimited);
     defer allocator.free(source);
     const formatted = try terence_css.formatStylesheetAlloc(allocator, source, .{
         .error_mode = .strict,

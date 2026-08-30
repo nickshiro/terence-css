@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   open,
   readFile,
@@ -125,6 +126,43 @@ test("writes multiple files and preserves permissions", async () => {
     "b {\n  color: blue;\n}\n",
   );
   assert.equal((await stat(join(directory, "a.css"))).mode & 0o777, 0o640);
+});
+
+test("recursively writes CSS files in a directory", async () => {
+  const directory = await temporaryDirectory();
+  await mkdir(join(directory, "nested"));
+  await writeFile(join(directory, "root.css"), "a{color:red}");
+  await writeFile(join(directory, "nested", "child.css"), "b{color:blue}");
+  await writeFile(join(directory, "nested", "ignored.txt"), "not css");
+
+  const result = await run(["--write", directory]);
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+  assert.equal(
+    await readFile(join(directory, "root.css"), "utf8"),
+    formattedCss,
+  );
+  assert.equal(
+    await readFile(join(directory, "nested", "child.css"), "utf8"),
+    "b {\n  color: blue;\n}\n",
+  );
+  assert.equal(
+    await readFile(join(directory, "nested", "ignored.txt"), "utf8"),
+    "not css",
+  );
+});
+
+test("recursively checks CSS files in a directory", async () => {
+  const directory = await temporaryDirectory();
+  await mkdir(join(directory, "nested"));
+  await writeFile(join(directory, "clean.css"), formattedCss);
+  await writeFile(join(directory, "nested", "dirty.css"), "b{color:blue}");
+
+  const result = await run(["--check", directory]);
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, `${directory}/nested/dirty.css\n`);
+  assert.equal(result.stderr, "");
 });
 
 test("checks files and reports only unformatted paths", async () => {
