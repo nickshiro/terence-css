@@ -75,10 +75,12 @@ jobs:
         shell: bash
         run: |
           package_version="$(node -p "require('./package.json').version")"
-          test "$RELEASE_TAG" = "v$package_version" || {
-            echo "::error::Release tag '$RELEASE_TAG' must match package version 'v$package_version'."
-            exit 1
-          }
+          if [[ "$RELEASE_TAG" != "v$package_version" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping $package_version for release $RELEASE_TAG."
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
           if [[ "$package_version" == *-* ]]; then
             test "$IS_PRERELEASE" = true || {
@@ -95,12 +97,15 @@ jobs:
           fi
 
       - name: Install dependencies
+        if: steps.release.outputs.publish == 'true'
         run: npm install --package-lock=false --omit=optional --ignore-scripts --no-audit --no-fund
 
       - name: Build and test native CLI
+        if: steps.release.outputs.publish == 'true'
         run: npm test
 
       - name: Publish native package
+        if: steps.release.outputs.publish == 'true'
         working-directory: npm/native/${{ matrix.target }}
         env:
           NPM_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
@@ -144,10 +149,12 @@ jobs:
         shell: bash
         run: |
           package_version="$(node -p "require('./package.json').version")"
-          test "$RELEASE_TAG" = "v$package_version" || {
-            echo "::error::Release tag '$RELEASE_TAG' must match package version 'v$package_version'."
-            exit 1
-          }
+          if [[ "$RELEASE_TAG" != "v$package_version" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping $package_version for release $RELEASE_TAG."
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
           if [[ "$package_version" == *-* ]]; then
             test "$IS_PRERELEASE" = true || exit 1
@@ -158,9 +165,11 @@ jobs:
           fi
 
       - name: Install dependencies
+        if: steps.release.outputs.publish == 'true'
         run: npm install --package-lock=false --omit=optional --ignore-scripts --no-audit --no-fund
 
       - name: Publish launcher package
+        if: steps.release.outputs.publish == 'true'
         env:
           NPM_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
         run: npm publish --access public --tag "$NPM_DIST_TAG"
