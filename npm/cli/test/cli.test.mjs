@@ -125,7 +125,9 @@ test("writes multiple files and preserves permissions", async () => {
     await readFile(join(directory, "b.css"), "utf8"),
     "b {\n  color: blue;\n}\n",
   );
-  assert.equal((await stat(join(directory, "a.css"))).mode & 0o777, 0o640);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(join(directory, "a.css"))).mode & 0o777, 0o640);
+  }
 });
 
 test("recursively writes CSS files in a directory", async () => {
@@ -161,7 +163,7 @@ test("recursively checks CSS files in a directory", async () => {
 
   const result = await run(["--check", directory]);
   assert.equal(result.code, 1);
-  assert.equal(result.stdout, `${directory}/nested/dirty.css\n`);
+  assert.equal(result.stdout, `${join(directory, "nested", "dirty.css")}\n`);
   assert.equal(result.stderr, "");
 });
 
