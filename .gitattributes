@@ -1,1 +1,4 @@
+* text=auto eol=lf
+*.exe binary
+*.wasm binary
 test/** -linguist-detectable
