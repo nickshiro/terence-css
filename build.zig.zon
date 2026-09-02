@@ -1,6 +1,6 @@
 .{
     .name = .terence_css,
-    .version = "0.1.3",
+    .version = "0.1.4",
     .fingerprint = 0x4436c86a6fb1dfe0,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

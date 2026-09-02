@@ -1,6 +1,6 @@
 {
   "name": "@terence-css/cli-linux-arm64",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Terence CSS native binary for Linux arm64",
   "license": "MIT",
   "os": [
