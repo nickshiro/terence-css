@@ -107,6 +107,7 @@ jobs:
       - name: Publish native package
         if: steps.release.outputs.publish == 'true'
         working-directory: npm/native/${{ matrix.target }}
+        shell: bash
         env:
           NPM_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
         run: npm publish --access public --tag "$NPM_DIST_TAG"
